@@ -9,29 +9,41 @@ import ComponentTable from "@/components/ComponentTable";
 import ReextractButton from "@/components/ReextractButton";
 
 /**
- * Extract the best search term from a hardware set to find it in the PDF.
- * Tries door numbers first ("D118A"), then item references ("Item #131"),
- * then falls back to set_number.
+ * Extract search terms from a hardware set to find it in the PDF.
+ * Returns multiple candidates — the caller should try each until one matches.
+ * Uses the description (which now contains the full heading from the PDF),
+ * then falls back to set_number-based terms.
  */
-function getSearchTerm(set: HardwareSet): string {
+function getSearchTerms(set: HardwareSet): string[] {
   const desc = set.description || "";
+  const terms: string[] = [];
 
-  // "Doors: D118A" or "Doors: D101A, D149A"
-  const doorsMatch = desc.match(/Doors?:\s*([^\n,]+)/i);
-  if (doorsMatch) return doorsMatch[1].trim();
+  if (desc) {
+    // The full description should match since it came from the PDF
+    terms.push(desc);
 
-  // "Item #131" or "Items #8"
-  const itemMatch = desc.match(/Items?\s*#?\s*(\d+)/);
-  if (itemMatch) return `Item #${itemMatch[1]}`;
+    // Also try a shorter unique fragment — the identifier portion
+    // e.g. from "Hardware Group/Set #103 — ENTRANCE" try "#103"
+    const numMatch = desc.match(/#\s*[\w\-.]+/);
+    if (numMatch) terms.push(numMatch[0].replace(/\s/g, ""));
 
-  // "Set #U-02"
-  return `Set #${set.set_number}`;
+    // Try "No. X" pattern e.g. "No. 01"
+    const noMatch = desc.match(/No\.?\s*[\w\-.]+/i);
+    if (noMatch) terms.push(noMatch[0]);
+  }
+
+  // Fallback to set_number
+  if (set.set_number) {
+    terms.push(set.set_number);
+  }
+
+  return terms;
 }
 
 export default function DocumentPage({ params }: { params: { id: string } }) {
   const { id } = params;
   const [selectedSetId, setSelectedSetId] = useState<number | null>(null);
-  const [searchQuery, setSearchQuery] = useState<string | null>(null);
+  const [searchTerms, setSearchTerms] = useState<string[]>([]);
   const searchKeyRef = useRef(0);
   const [searchKey, setSearchKey] = useState(0);
   const queryClient = useQueryClient();
@@ -70,9 +82,9 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
     const sets = doc?.sets ?? [];
     const set = sets.find((s) => s.id === setId);
     if (set) {
-      const term = getSearchTerm(set);
+      const terms = getSearchTerms(set);
       searchKeyRef.current += 1;
-      setSearchQuery(term);
+      setSearchTerms(terms);
       setSearchKey(searchKeyRef.current);
     }
   }, [doc?.sets]);
@@ -118,7 +130,7 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
           <PdfViewer
             docId={id}
             pageCount={doc.page_count}
-            searchQuery={searchQuery}
+            searchTerms={searchTerms}
             searchKey={searchKey}
           />
         </div>

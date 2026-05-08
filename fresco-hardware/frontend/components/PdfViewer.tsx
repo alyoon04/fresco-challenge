@@ -11,13 +11,12 @@ pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/b
 interface Props {
   docId: string;
   pageCount: number;
-  searchQuery: string | null;
+  searchTerms: string[];
   searchKey: number;
 }
 
 /**
- * Search the actual PDF text content (not DOM) to find which page contains
- * the query. This works regardless of which pages are currently rendered.
+ * Search actual PDF text content (not DOM) for the first page containing the query.
  */
 async function findPageWithText(
   pdfDocProxy: pdfjs.PDFDocumentProxy,
@@ -38,7 +37,7 @@ async function findPageWithText(
   return null;
 }
 
-export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: Props) {
+export default function PdfViewer({ docId, pageCount, searchTerms, searchKey }: Props) {
   const [numPages, setNumPages] = useState<number>(pageCount);
   const containerRef = useRef<HTMLDivElement>(null);
   const [pageWidth, setPageWidth] = useState(700);
@@ -58,7 +57,7 @@ export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: 
 
   // Search PDF text content to find correct page, scroll there, then highlight
   useEffect(() => {
-    if (!searchQuery || !containerRef.current) return;
+    if (searchTerms.length === 0 || !containerRef.current) return;
 
     // Clear previous highlight
     if (highlightRef.current) {
@@ -66,16 +65,26 @@ export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: 
       highlightRef.current = null;
     }
 
-    const query = searchQuery.toLowerCase();
     let cancelled = false;
 
     async function doSearch() {
       const container = containerRef.current;
       if (!container || !pdfDocRef.current) return;
 
-      // Search actual PDF text content for the correct page
-      const targetPage = await findPageWithText(pdfDocRef.current, query);
-      if (cancelled || !targetPage) return;
+      // Try each search term until one matches a page
+      let targetPage: number | null = null;
+      let matchedTerm: string | null = null;
+      for (const term of searchTerms) {
+        targetPage = await findPageWithText(pdfDocRef.current!, term);
+        if (cancelled) return;
+        if (targetPage) {
+          matchedTerm = term;
+          break;
+        }
+      }
+
+      if (!targetPage || !matchedTerm) return;
+      const query = matchedTerm.toLowerCase();
 
       // Scroll to the target page element
       const pageElements = container.querySelectorAll(".react-pdf__Page");
@@ -88,7 +97,7 @@ export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: 
       await new Promise((r) => setTimeout(r, 600));
       if (cancelled) return;
 
-      // Now search the rendered text layer spans on that page for highlighting
+      // Search the rendered text layer spans on that page for highlighting
       const spans = targetEl.querySelectorAll<HTMLSpanElement>(
         ".react-pdf__Page__textContent span",
       );
@@ -128,7 +137,7 @@ export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: 
 
     doSearch();
     return () => { cancelled = true; };
-  }, [searchQuery, searchKey, docId]);
+  }, [searchTerms, searchKey, docId]);
 
   return (
     <div className="flex flex-col h-full">
