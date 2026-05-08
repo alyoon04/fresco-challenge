@@ -8,36 +8,29 @@ import SetList from "@/components/SetList";
 import ComponentTable from "@/components/ComponentTable";
 import ReextractButton from "@/components/ReextractButton";
 
-/**
- * Extract search terms from a hardware set to find it in the PDF.
- * Returns multiple candidates — the caller should try each until one matches.
- * Uses the description (which now contains the full heading from the PDF),
- * then falls back to set_number-based terms.
- */
 function getSearchTerms(set: HardwareSet): string[] {
   const desc = set.description || "";
   const terms: string[] = [];
 
   if (desc) {
-    // The full description should match since it came from the PDF
     terms.push(desc);
-
-    // Also try a shorter unique fragment — the identifier portion
-    // e.g. from "Hardware Group/Set #103 — ENTRANCE" try "#103"
     const numMatch = desc.match(/#\s*[\w\-.]+/);
     if (numMatch) terms.push(numMatch[0].replace(/\s/g, ""));
-
-    // Try "No. X" pattern e.g. "No. 01"
     const noMatch = desc.match(/No\.?\s*[\w\-.]+/i);
     if (noMatch) terms.push(noMatch[0]);
   }
 
-  // Fallback to set_number
   if (set.set_number) {
     terms.push(set.set_number);
   }
 
   return terms;
+}
+
+function StatusDot({ status }: { status: string }) {
+  if (status === "done") return <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />;
+  if (status === "failed") return <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />;
+  return <span className="w-2 h-2 rounded-full bg-amber-500 inline-block animate-pulse-soft" />;
 }
 
 export default function DocumentPage({ params }: { params: { id: string } }) {
@@ -53,7 +46,6 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
     queryFn: () => fetchDocument(id),
   });
 
-  // WebSocket: listen for status changes, refetch when notified
   useEffect(() => {
     const status = doc?.status;
     if (status === "done" || status === "failed") return;
@@ -89,44 +81,75 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
     }
   }, [doc?.sets]);
 
-  if (isLoading) return <div className="p-8 text-gray-500">Loading document...</div>;
-  if (error) return <div className="p-8 text-red-500">Error: {String(error)}</div>;
-  if (!doc) return <div className="p-8 text-gray-500">Document not found</div>;
+  if (isLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-cream-100">
+        <p className="text-cream-500 text-sm">Loading document...</p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-cream-100">
+        <p className="text-red-600 text-sm">Error: {String(error)}</p>
+      </div>
+    );
+  }
+  if (!doc) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-cream-100">
+        <p className="text-cream-500 text-sm">Document not found</p>
+      </div>
+    );
+  }
 
   const selectedSet = doc.sets.find((s) => s.id === selectedSetId) ?? null;
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="h-screen flex flex-col bg-cream-100">
       {/* Header */}
-      <header className="px-4 py-2 border-b bg-white flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <a href="/" className="text-sm text-blue-600 hover:text-blue-800">&larr; Home</a>
-          <h1 className="text-lg font-semibold">{doc.filename}</h1>
-          <span className="text-xs text-gray-400">
-            {doc.page_count} pages &middot;{" "}
-            <span
-              className={
-                doc.status === "done"
-                  ? "text-green-600"
-                  : doc.status === "failed"
-                    ? "text-red-600"
-                    : "text-yellow-600"
-              }
-            >
-              {doc.status}
-            </span>
-            {doc.sets.length > 0 && ` \u00b7 ${doc.sets.length} sets`}
-          </span>
+      <header className="px-5 py-3 border-b border-cream-200 bg-cream-50 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-4">
+          <a
+            href="/"
+            className="text-sm text-cream-600 border border-cream-300 rounded-lg px-3 py-1.5
+                       transition-all duration-150
+                       hover:border-cream-400 hover:text-cream-800 hover:bg-cream-100
+                       active:scale-[0.97]"
+          >
+            &larr; Back
+          </a>
+          <div>
+            <h1 className="text-base font-semibold text-cream-900 leading-tight">
+              {doc.filename}
+            </h1>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-xs text-cream-500">{doc.page_count} pages</span>
+              <span className="text-cream-300">&middot;</span>
+              <div className="flex items-center gap-1.5">
+                <StatusDot status={doc.status} />
+                <span className="text-xs text-cream-600">{doc.status}</span>
+              </div>
+              {doc.sets.length > 0 && (
+                <>
+                  <span className="text-cream-300">&middot;</span>
+                  <span className="text-xs text-cream-500">{doc.sets.length} sets</span>
+                </>
+              )}
+            </div>
+          </div>
         </div>
         {doc.error_message && (
-          <p className="text-sm text-red-500 max-w-md truncate">{doc.error_message}</p>
+          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-1.5 max-w-md truncate">
+            {doc.error_message}
+          </p>
         )}
       </header>
 
       {/* Three-pane layout */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left: PDF viewer */}
-        <div className="w-1/2 border-r">
+        <div className="w-1/2 border-r border-cream-200">
           <PdfViewer
             docId={id}
             pageCount={doc.page_count}
@@ -136,27 +159,29 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
         </div>
 
         {/* Center: Set list */}
-        <div className="w-1/4 border-r bg-white overflow-auto">
-          <div className="px-3 py-2 border-b bg-gray-50">
-            <h2 className="text-sm font-semibold text-gray-600">Hardware Sets</h2>
+        <div className="w-1/4 border-r border-cream-200 bg-cream-50 overflow-auto flex flex-col">
+          <div className="px-4 py-3 border-b border-cream-200">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-cream-500">
+              Hardware Sets
+            </h2>
           </div>
           <SetList sets={doc.sets} selectedId={selectedSetId} onSelect={handleSelectSet} />
         </div>
 
         {/* Right: Component table + re-extract */}
-        <div className="w-1/4 bg-white overflow-auto flex flex-col">
+        <div className="w-1/4 bg-cream-50 overflow-auto flex flex-col">
           {selectedSet ? (
             <>
-              <div className="px-3 py-2 border-b bg-gray-50 flex items-center justify-between">
-                <div>
-                  <h2 className="text-sm font-semibold">
+              <div className="px-4 py-3 border-b border-cream-200 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-cream-900 leading-snug">
                     {selectedSet.description || selectedSet.set_number}
                   </h2>
                 </div>
                 <ReextractButton setId={selectedSet.id} docId={id} />
               </div>
               {selectedSet.column_reasoning && (
-                <p className="px-3 py-1 text-xs text-gray-400 bg-gray-50 border-b">
+                <p className="px-4 py-2 text-xs text-cream-500 bg-cream-100 border-b border-cream-200 leading-relaxed">
                   {selectedSet.column_reasoning}
                 </p>
               )}
@@ -165,8 +190,8 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
               </div>
             </>
           ) : (
-            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-              Select a set to view components
+            <div className="flex items-center justify-center h-full">
+              <p className="text-sm text-cream-400">Select a set to view components</p>
             </div>
           )}
         </div>
