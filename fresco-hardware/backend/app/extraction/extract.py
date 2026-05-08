@@ -1,30 +1,22 @@
 """
 Stage 4: Hardware Set Extraction
 
-Sends batches of schedule pages to Claude Sonnet 4.6 using native PDF input.
-Uses structured output via tool use to return hardware sets, components, and
-per-field confidence scores.
+Sends batches of schedule pages as text to Claude Sonnet 4.6.
+Uses structured output via tool use to return hardware sets, components,
+and per-field confidence scores.
 
-Key responsibility: manufacturer vs. finish column disambiguation.
-  - Classifies columns by majority membership in known mfr/finish reference sets
-  - Per-doc legend (from Stage 3) overrides global reference codes
-  - Records reasoning in column_classification_reasoning field
-
-Handles three observed formats:
-  1. ATC-style:       Explicit column headers under "Hardware Group No. XX"
-  2. Hdw_Spec-style:  "Set #N" header + implicit-column list lines
-  3. Pure tabular:    Rows grouped under set headers in a table schedule
+Key design decisions:
+  - Text mode (not PDF) for speed — 3-5x fewer tokens, much faster
+  - 8 parallel batches for throughput
+  - on_batch callback for progressive result streaming
 """
 
-import base64
 import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, List
-
-import fitz  # PyMuPDF
+from typing import Any, Callable, List, Optional
 
 from app.extraction.page_filter import CandidatePage
 from app.models.schemas import HardwareSet
@@ -38,7 +30,7 @@ logger = logging.getLogger(__name__)
 _MODEL = "claude-sonnet-4-6"
 _MAX_TOKENS = 16000
 _BATCH_SIZE = 4
-_MAX_PARALLEL = 4
+_MAX_PARALLEL = 8
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extraction_system.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text()
@@ -49,12 +41,6 @@ _SYSTEM_PROMPT = _PROMPT_PATH.read_text()
 # ---------------------------------------------------------------------------
 
 def _build_tool_schema() -> dict:
-    """
-    Build the tool definition for record_hardware_sets.
-
-    Wraps HardwareSet's JSON schema in a list so the model can return
-    multiple sets in a single tool call.
-    """
     set_schema = HardwareSet.model_json_schema()
     return {
         "name": "record_hardware_sets",
@@ -77,57 +63,27 @@ def _build_tool_schema() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# PDF slicing
-# ---------------------------------------------------------------------------
-
-def _slice_pdf(pdf_bytes: bytes, page_indices: List[int]) -> bytes:
-    """
-    Create a new PDF containing only the specified pages from the original.
-
-    Args:
-        pdf_bytes: Original full PDF bytes.
-        page_indices: Zero-indexed page numbers to include.
-
-    Returns:
-        Bytes of the sliced PDF.
-    """
-    src = fitz.open(stream=pdf_bytes, filetype="pdf")
-    dst = fitz.open()  # New empty PDF
-    for idx in page_indices:
-        dst.insert_pdf(src, from_page=idx, to_page=idx)
-    result = dst.tobytes()
-    dst.close()
-    src.close()
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Batch extraction
+# Batch extraction (text mode)
 # ---------------------------------------------------------------------------
 
 def _extract_batch(
-    batch_pdf_bytes: bytes,
-    page_mapping: dict[int, int],
+    page_texts: dict[int, str],
     legend: dict,
     client: Any,
     tool: dict,
 ) -> List[HardwareSet]:
     """
-    Extract hardware sets from a single batch of pages.
+    Extract hardware sets from a batch of pages using text input.
 
     Args:
-        batch_pdf_bytes: PDF bytes containing only this batch's pages.
-        page_mapping: {batch_page_idx: original_page_num} for location translation.
+        page_texts: {original_page_num: full_text} for each page in the batch.
         legend: Per-doc legend dict from Stage 3.
         client: Anthropic client.
         tool: Tool schema dict.
 
     Returns:
-        List of HardwareSet with page numbers translated to original doc coordinates.
+        List of HardwareSet with original page numbers.
     """
-    pdf_b64 = base64.standard_b64encode(batch_pdf_bytes).decode("ascii")
-
-    # Build user message: legend context + PDF document
     legend_text = ""
     if legend.get("mfr_codes") or legend.get("finish_codes"):
         legend_text = (
@@ -135,11 +91,15 @@ def _extract_batch(
             f"```json\n{json.dumps(legend, indent=2)}\n```\n\n"
         )
 
-    batch_pages_str = ", ".join(str(v) for v in sorted(page_mapping.values()))
+    # Build page text block
+    pages_content = ""
+    page_nums = sorted(page_texts.keys())
+    for pn in page_nums:
+        pages_content += f"\n--- Page {pn} ---\n{page_texts[pn]}\n"
 
+    batch_pages_str = ", ".join(str(p) for p in page_nums)
     start_time = time.time()
 
-    # Use streaming to support large max_tokens (>10 min requests)
     response = client.messages.stream(
         model=_MODEL,
         max_tokens=_MAX_TOKENS,
@@ -153,25 +113,13 @@ def _extract_batch(
         messages=[
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"{legend_text}"
-                            f"Extract all hardware sets from the following specbook pages "
-                            f"(original page numbers: {batch_pages_str}). "
-                            f"Use the record_hardware_sets tool to return your results."
-                        ),
-                    },
-                    {
-                        "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "application/pdf",
-                            "data": pdf_b64,
-                        },
-                    },
-                ],
+                "content": (
+                    f"{legend_text}"
+                    f"Extract all hardware sets from the following specbook pages "
+                    f"(page numbers are original document page numbers).\n"
+                    f"Use the record_hardware_sets tool to return your results.\n"
+                    f"{pages_content}"
+                ),
             }
         ],
         tools=[tool],
@@ -204,10 +152,6 @@ def _extract_batch(
             for raw in raw_sets:
                 try:
                     hw_set = HardwareSet.model_validate(raw)
-                    # Translate batch-relative page numbers to original doc page numbers
-                    for loc in hw_set.locations:
-                        original = page_mapping.get(loc.page_num, loc.page_num)
-                        loc.page_num = original
                     sets.append(hw_set)
                 except Exception as e:
                     logger.warning("Failed to parse hardware set: %s — raw: %s", e, raw)
@@ -225,78 +169,75 @@ def extract_sets_from_pages(
     candidate_pages: List[CandidatePage],
     legend: dict,
     anthropic_client: Any,
+    on_batch: Optional[Callable[[List[HardwareSet]], None]] = None,
 ) -> List[HardwareSet]:
     """
-    Extract hardware sets from candidate schedule pages using Claude Opus 4.7.
+    Extract hardware sets from candidate schedule pages.
 
-    Algorithm:
-      1. Slice original PDF to only candidate pages, keeping page number mapping.
-      2. Group candidate pages into batches of 4.
-      3. For each batch, create a batch PDF and send to Opus with the extraction
-         system prompt (cached), legend context, and PDF as a document block.
-      4. Parse tool-use responses into HardwareSet objects, translating page numbers.
-      5. Retry once on API failure; on second failure, log and skip the batch.
+    Uses text extraction (not PDF) for speed. Runs up to 8 batches in parallel.
+    Calls on_batch(sets) after each batch completes for progressive results.
 
     Args:
-        pdf_bytes: Full original PDF bytes.
+        pdf_bytes: Full original PDF bytes (unused in text mode, kept for API compat).
         candidate_pages: Pages that passed the Stage 2 conjunction filter.
-        legend: Per-doc legend from Stage 3 {"mfr_codes": {...}, "finish_codes": {...}}.
+        legend: Per-doc legend from Stage 3.
         anthropic_client: Initialized Anthropic client.
+        on_batch: Optional callback invoked with each batch's sets as they complete.
 
     Returns:
-        List of HardwareSet objects across all batches.
+        List of all HardwareSet objects across all batches.
     """
     if not candidate_pages:
         logger.warning("No candidate pages to extract from")
         return []
 
-    # Sort by page number for consistent ordering
     sorted_pages = sorted(candidate_pages, key=lambda p: p.page_num)
-    page_indices = [p.page_num for p in sorted_pages]
 
     logger.info(
-        "Extracting from %d candidate pages in batches of %d",
-        len(page_indices), _BATCH_SIZE,
+        "Extracting from %d candidate pages in batches of %d (max %d parallel)",
+        len(sorted_pages), _BATCH_SIZE, _MAX_PARALLEL,
     )
 
     tool = _build_tool_schema()
     all_sets: List[HardwareSet] = []
 
-    # Prepare all batches
-    batches = []
-    for batch_start in range(0, len(page_indices), _BATCH_SIZE):
-        batch_indices = page_indices[batch_start : batch_start + _BATCH_SIZE]
-        page_mapping = {i: orig for i, orig in enumerate(batch_indices)}
-        batch_pdf = _slice_pdf(pdf_bytes, batch_indices)
-        batches.append((batch_indices, page_mapping, batch_pdf))
+    # Prepare batches with 1-page overlap
+    batches: List[dict[int, str]] = []
+    batch_start = 0
+    while batch_start < len(sorted_pages):
+        batch_end = min(batch_start + _BATCH_SIZE, len(sorted_pages))
+        batch_pages = sorted_pages[batch_start:batch_end]
+        page_texts = {p.page_num: p.full_text for p in batch_pages}
+        batches.append(page_texts)
+        batch_start += max(_BATCH_SIZE - 1, 1)
 
-    def _run_batch(args):
-        batch_indices, page_mapping, batch_pdf = args
+    def _run_batch(page_texts: dict[int, str]):
+        page_nums = sorted(page_texts.keys())
         for attempt in range(2):
             try:
-                return _extract_batch(
-                    batch_pdf, page_mapping, legend, anthropic_client, tool,
-                )
+                return _extract_batch(page_texts, legend, anthropic_client, tool)
             except Exception as e:
                 if attempt == 0:
                     logger.warning(
                         "Batch [pages %s] failed (attempt 1), retrying in 2s: %s",
-                        batch_indices, e,
+                        page_nums, e,
                     )
                     time.sleep(2.0)
                 else:
                     logger.error(
                         "Batch [pages %s] failed after retry, skipping: %s",
-                        batch_indices, e,
+                        page_nums, e,
                     )
         return []
 
     # Process batches in parallel
     with ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as executor:
-        futures = {executor.submit(_run_batch, b): b[0] for b in batches}
+        futures = {executor.submit(_run_batch, b): b for b in batches}
         for future in as_completed(futures):
             batch_sets = future.result()
             all_sets.extend(batch_sets)
+            if on_batch and batch_sets:
+                on_batch(batch_sets)
 
-    logger.info("Extraction complete: %d total sets from %d pages", len(all_sets), len(page_indices))
+    logger.info("Extraction complete: %d total sets from %d pages", len(all_sets), len(sorted_pages))
     return all_sets

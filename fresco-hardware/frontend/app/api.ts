@@ -54,6 +54,21 @@ export interface RefCodes {
 
 // ---- Fetch helpers ----
 
+export interface DocumentSummary {
+  id: string;
+  filename: string;
+  page_count: number;
+  status: string;
+  created_at: string | null;
+  set_count: number;
+}
+
+export async function listDocuments(): Promise<DocumentSummary[]> {
+  const res = await fetch(`${API_BASE}/api/documents`);
+  if (!res.ok) throw new Error(`List documents failed: ${res.status}`);
+  return res.json();
+}
+
 export async function uploadDocument(file: File): Promise<{ doc_id: string; status: string }> {
   const form = new FormData();
   form.append("file", file);

@@ -24,12 +24,33 @@ function confidencePill(confidence: number) {
 export default function SetList({ sets, selectedId, onSelect }: Props) {
   const [query, setQuery] = useState("");
 
+  // Deduplicate by set_number (keep first by id, i.e. earliest extraction)
+  // then sort by PDF order (page, then vertical position)
+  const sorted = useMemo(() => {
+    const seen = new Set<string>();
+    const deduped = sets.filter((s) => {
+      if (seen.has(s.set_number)) return false;
+      seen.add(s.set_number);
+      return true;
+    });
+    return deduped.sort((a, b) => {
+      const aLoc = a.locations[0];
+      const bLoc = b.locations[0];
+      if (!aLoc && !bLoc) return 0;
+      if (!aLoc) return 1;
+      if (!bLoc) return -1;
+      if (aLoc.page_num !== bLoc.page_num) return aLoc.page_num - bLoc.page_num;
+      const aY = aLoc.bbox?.[1] ?? aLoc.line_start ?? 0;
+      const bY = bLoc.bbox?.[1] ?? bLoc.line_start ?? 0;
+      return aY - bY;
+    });
+  }, [sets]);
+
   const filtered = useMemo(() => {
-    if (!query.trim()) return sets;
+    if (!query.trim()) return sorted;
     const q = query.toLowerCase();
-    return sets.filter(
+    return sorted.filter(
       (s) =>
-        s.set_number.toLowerCase().includes(q) ||
         s.description?.toLowerCase().includes(q) ||
         s.components.some(
           (c) =>
@@ -49,7 +70,7 @@ export default function SetList({ sets, selectedId, onSelect }: Props) {
       <div className="px-3 py-2 border-b">
         <input
           type="text"
-          placeholder="Search sets, components, mfr..."
+          placeholder="Search doors, components, mfr..."
           className="w-full text-sm border rounded px-2 py-1.5"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -68,18 +89,19 @@ export default function SetList({ sets, selectedId, onSelect }: Props) {
           onClick={() => onSelect(s.id)}
         >
           <div className="flex items-center gap-2">
-            <span className="font-mono text-sm font-semibold">{s.set_number}</span>
+            <span className="text-sm font-medium text-gray-800 truncate">
+              {s.description || s.set_number}
+            </span>
             {s.is_not_used && (
-              <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">NOT USED</span>
+              <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded shrink-0">NOT USED</span>
             )}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-xs text-gray-400">
+              {s.components.length} component{s.components.length !== 1 ? "s" : ""}
+            </span>
             {confidencePill(s.overall_confidence)}
           </div>
-          {s.description && (
-            <p className="text-xs text-gray-500 mt-0.5 truncate">{s.description}</p>
-          )}
-          <p className="text-xs text-gray-400 mt-0.5">
-            {s.components.length} component{s.components.length !== 1 ? "s" : ""}
-          </p>
         </li>
       ))}
     </ul>

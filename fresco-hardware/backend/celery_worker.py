@@ -23,7 +23,7 @@ from pathlib import Path
 
 import anthropic
 from celery import Celery
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.extraction.extract import extract_sets_from_pages
@@ -104,30 +104,8 @@ def _update_status(db, doc_id: str, status: DocumentStatus, error: str | None = 
         pass
 
 
-def _store_results(db, doc_id: str, sets, pages, legend):
-    """Persist extraction results to the database."""
-    doc = db.get(Document, uuid.UUID(doc_id))
-    if not doc:
-        return
-
-    # Store legend
-    doc.legend_json = legend
-
-    # Store page data
-    for page in pages:
-        db_page = Page(
-            doc_id=uuid.UUID(doc_id),
-            page_num=page.page_num,
-            text_blocks=[
-                {"text": tb.text, "bbox": list(tb.bbox), "line_idx": tb.line_idx}
-                for tb in page.text_blocks
-            ],
-            is_candidate=False,
-            filter_score=0,
-        )
-        db.add(db_page)
-
-    # Store hardware sets, components, and locations
+def _store_sets(db, doc_id: str, sets):
+    """Persist a batch of hardware sets to the database."""
     for hw_set in sets:
         set_record = HardwareSetRecord(
             doc_id=uuid.UUID(doc_id),
@@ -139,7 +117,7 @@ def _store_results(db, doc_id: str, sets, pages, legend):
             raw_json=hw_set.model_dump(),
         )
         db.add(set_record)
-        db.flush()  # Get set_record.id
+        db.flush()
 
         for idx, comp in enumerate(hw_set.components):
             db_comp = ComponentRecord(
@@ -172,6 +150,30 @@ def _store_results(db, doc_id: str, sets, pages, legend):
             db.add(db_loc)
 
     db.commit()
+
+
+def _store_results(db, doc_id: str, sets, pages, legend):
+    """Persist extraction results to the database."""
+    doc = db.get(Document, uuid.UUID(doc_id))
+    if not doc:
+        return
+
+    doc.legend_json = legend
+
+    for page in pages:
+        db_page = Page(
+            doc_id=uuid.UUID(doc_id),
+            page_num=page.page_num,
+            text_blocks=[
+                {"text": tb.text, "bbox": list(tb.bbox), "line_idx": tb.line_idx}
+                for tb in page.text_blocks
+            ],
+            is_candidate=False,
+            filter_score=0,
+        )
+        db.add(db_page)
+
+    _store_sets(db, doc_id, sets)
 
 
 # ---------------------------------------------------------------------------
@@ -224,16 +226,64 @@ def process_document(self, doc_id: str):
             doc_id, len(legend.get("mfr_codes", {})), len(legend.get("finish_codes", {})),
         )
 
-        # Stage 4: Extraction
-        raw_sets = extract_sets_from_pages(pdf_bytes, candidates, legend, client)
+        # Store page data and legend early
+        doc = db.get(Document, uuid.UUID(doc_id))
+        if doc:
+            doc.legend_json = legend
+        for page in pages:
+            db_page = Page(
+                doc_id=uuid.UUID(doc_id),
+                page_num=page.page_num,
+                text_blocks=[
+                    {"text": tb.text, "bbox": list(tb.bbox), "line_idx": tb.line_idx}
+                    for tb in page.text_blocks
+                ],
+                is_candidate=False,
+                filter_score=0,
+            )
+            db.add(db_page)
+        db.commit()
+
+        # Stage 4: Extraction with progressive results
+        batch_count = [0]
+
+        def _on_batch(batch_sets):
+            """Save each batch's sets immediately and notify the frontend."""
+            batch_count[0] += 1
+            _store_sets(db, doc_id, batch_sets)
+            logger.info(
+                "[%s] Batch %d complete: +%d sets",
+                doc_id, batch_count[0], len(batch_sets),
+            )
+            try:
+                from app.api.routes import publish_status
+                publish_status(doc_id, "processing", {"new_sets": len(batch_sets)})
+            except Exception:
+                pass
+
+        raw_sets = extract_sets_from_pages(pdf_bytes, candidates, legend, client, on_batch=_on_batch)
         logger.info("[%s] Stage 4: extracted %d raw sets", doc_id, len(raw_sets))
 
-        # Stage 5: Reconciliation
+        # Stage 5: Reconciliation — merge multi-page sets and snap bboxes
         final_sets = reconcile_sets(raw_sets, pages)
         logger.info("[%s] Stage 5: reconciled to %d sets", doc_id, len(final_sets))
 
-        # Store results
-        _store_results(db, doc_id, final_sets, pages, legend)
+        # Replace progressive results with final reconciled sets (with bboxes)
+        db.execute(
+            text("DELETE FROM locations WHERE set_id IN (SELECT id FROM hardware_sets WHERE doc_id = :did)"),
+            {"did": doc_id},
+        )
+        db.execute(
+            text("DELETE FROM components WHERE set_id IN (SELECT id FROM hardware_sets WHERE doc_id = :did)"),
+            {"did": doc_id},
+        )
+        db.execute(
+            text("DELETE FROM hardware_sets WHERE doc_id = :did"),
+            {"did": doc_id},
+        )
+        db.commit()
+        _store_sets(db, doc_id, final_sets)
+
         _update_status(db, doc_id, DocumentStatus.DONE)
         logger.info("[%s] Pipeline complete: %d sets stored", doc_id, len(final_sets))
 

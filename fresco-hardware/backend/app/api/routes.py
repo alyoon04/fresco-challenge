@@ -193,6 +193,29 @@ def healthz():
     )
 
 
+@app.get("/api/documents")
+def list_documents():
+    """List all documents, most recent first."""
+    db = _get_db()
+    try:
+        docs = db.execute(
+            select(Document).order_by(Document.created_at.desc())
+        ).scalars().all()
+        return [
+            {
+                "id": str(d.id),
+                "filename": d.filename,
+                "page_count": d.page_count,
+                "status": d.status.value if hasattr(d.status, "value") else d.status,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "set_count": len(d.hardware_sets),
+            }
+            for d in docs
+        ]
+    finally:
+        db.close()
+
+
 @app.post("/api/documents", response_model=UploadResponse)
 def upload_document(file: UploadFile = File(...)):
     """

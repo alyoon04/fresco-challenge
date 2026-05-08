@@ -2,7 +2,8 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { uploadDocument } from "./api";
+import { useQuery } from "@tanstack/react-query";
+import { uploadDocument, listDocuments } from "./api";
 
 export default function Home() {
   const router = useRouter();
@@ -11,6 +12,11 @@ export default function Home() {
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
+  const { data: docs } = useQuery({
+    queryKey: ["documents"],
+    queryFn: listDocuments,
+  });
 
   const handleUpload = useCallback(
     async (file: File) => {
@@ -39,13 +45,15 @@ export default function Home() {
   );
 
   return (
-    <main className="flex items-center justify-center min-h-screen">
-      <div className="text-center space-y-6 max-w-md w-full px-4">
-        <h1 className="text-2xl font-bold text-gray-800">Fresco Hardware Sets</h1>
-        <p className="text-gray-500 text-sm">Upload a Division 08 specbook PDF to extract hardware sets.</p>
+    <main className="min-h-screen py-12 px-4">
+      <div className="max-w-2xl mx-auto space-y-8">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold text-gray-800">Fresco Hardware Sets</h1>
+          <p className="text-gray-500 text-sm mt-1">Upload a Division 08 specbook PDF to extract hardware sets.</p>
+        </div>
 
         <div
-          className={`border-2 border-dashed rounded-lg p-10 transition-colors cursor-pointer ${
+          className={`border-2 border-dashed rounded-lg p-10 transition-colors cursor-pointer text-center ${
             dragOver ? "border-blue-400 bg-blue-50" : "border-gray-300 hover:border-gray-400"
           }`}
           onDragOver={(e) => {
@@ -83,6 +91,42 @@ export default function Home() {
         </button>
 
         {error && <p className="text-red-500 text-sm">{error}</p>}
+
+        {/* Previous documents */}
+        {docs && docs.length > 0 && (
+          <div>
+            <h2 className="text-sm font-semibold text-gray-600 mb-3">Previous Documents</h2>
+            <div className="border rounded-lg divide-y">
+              {docs.map((doc) => (
+                <a
+                  key={doc.id}
+                  href={`/doc/${doc.id}`}
+                  className="flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">{doc.filename}</p>
+                    <p className="text-xs text-gray-400">
+                      {doc.page_count} pages
+                      {doc.set_count > 0 && ` \u00b7 ${doc.set_count} sets`}
+                      {doc.created_at && ` \u00b7 ${new Date(doc.created_at).toLocaleDateString()}`}
+                    </p>
+                  </div>
+                  <span
+                    className={`text-xs px-2 py-1 rounded-full ${
+                      doc.status === "done"
+                        ? "bg-green-100 text-green-700"
+                        : doc.status === "failed"
+                          ? "bg-red-100 text-red-700"
+                          : "bg-yellow-100 text-yellow-700"
+                    }`}
+                  >
+                    {doc.status}
+                  </span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );

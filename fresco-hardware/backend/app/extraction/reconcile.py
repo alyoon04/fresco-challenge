@@ -1,21 +1,19 @@
 """
 Stage 5: Reconciliation
 
-Groups extracted hardware sets by set_number across pages, merges components
-from multi-page sets, and snaps approximate bounding box locations to the
-nearest PyMuPDF text block coordinates.
+Groups extracted hardware sets by set_number across pages and merges components
+from multi-page sets or overlapping batch duplicates.
 
 Handles:
   - Sets that span page breaks (same set_number on consecutive pages)
   - Deduplication of components extracted from overlapping page batches
-  - Location refinement using stored PyMuPDF bounding boxes from Stage 1
 """
 
 import logging
 from collections import defaultdict
-from typing import List, Optional
+from typing import List
 
-from app.extraction.ingest import PageData, TextBlock
+from app.extraction.ingest import PageData
 from app.models.schemas import HardwareSet, Location
 
 logger = logging.getLogger(__name__)
@@ -24,6 +22,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Multi-page merging
 # ---------------------------------------------------------------------------
+
+def _sets_overlap(a: HardwareSet, b: HardwareSet) -> bool:
+    """Check if two sets share any pages (from batch overlap)."""
+    a_pages = {loc.page_num for loc in a.locations}
+    b_pages = {loc.page_num for loc in b.locations}
+    return bool(a_pages & b_pages)
+
 
 def _should_merge(primary: HardwareSet, candidate: HardwareSet) -> bool:
     """
@@ -39,6 +44,10 @@ def _should_merge(primary: HardwareSet, candidate: HardwareSet) -> bool:
     """
     if primary.set_number != candidate.set_number:
         return False
+
+    # Overlapping pages means duplicate from batch overlap — always merge
+    if _sets_overlap(primary, candidate):
+        return True
 
     # Check page adjacency
     primary_pages = {loc.page_num for loc in primary.locations}
@@ -59,12 +68,29 @@ def _should_merge(primary: HardwareSet, candidate: HardwareSet) -> bool:
 
 
 def _merge_two_sets(primary: HardwareSet, candidate: HardwareSet) -> HardwareSet:
-    """Merge a continuation set into the primary set."""
+    """Merge a continuation set into the primary set, deduplicating components."""
+    # Deduplicate components by (description, catalog_number)
+    seen = set()
+    merged_components = []
+    for comp in primary.components + candidate.components:
+        key = (comp.description.value, comp.catalog_number.value if comp.catalog_number else None)
+        if key not in seen:
+            seen.add(key)
+            merged_components.append(comp)
+
+    # Deduplicate locations by page_num
+    seen_pages = set()
+    merged_locations = []
+    for loc in primary.locations + candidate.locations:
+        if loc.page_num not in seen_pages:
+            seen_pages.add(loc.page_num)
+            merged_locations.append(loc)
+
     return HardwareSet(
         set_number=primary.set_number,
         description=primary.description or candidate.description,
-        locations=primary.locations + candidate.locations,
-        components=primary.components + candidate.components,
+        locations=merged_locations,
+        components=merged_components,
         is_not_used=primary.is_not_used and candidate.is_not_used,
         overall_confidence=min(primary.overall_confidence, candidate.overall_confidence),
         column_classification_reasoning=(
@@ -117,90 +143,79 @@ def _merge_sets(sets: List[HardwareSet]) -> List[HardwareSet]:
 
 
 # ---------------------------------------------------------------------------
-# Bbox snapping
+# Location fixing — search PDF text blocks for identifying text
 # ---------------------------------------------------------------------------
 
-def _find_matching_blocks(
-    page_data: PageData,
-    set_number: str,
-    description: Optional[str],
-) -> List[TextBlock]:
-    """
-    Find text blocks on a page that reference the given set number or description.
-
-    Matches blocks whose text contains the set_number as a distinct token,
-    or contains the description text (case-insensitive).
-    """
-    matches: List[TextBlock] = []
-    set_num_lower = set_number.lower()
-
-    for block in page_data.text_blocks:
-        text_lower = block.text.lower()
-
-        # Check for set number (as a word boundary match)
-        if set_num_lower in text_lower:
-            matches.append(block)
-            continue
-
-        # Check for description match
-        if description and description.lower() in text_lower:
-            matches.append(block)
-
-    return matches
-
-
-def _union_bbox(
-    bboxes: List[tuple[float, float, float, float]],
-) -> tuple[float, float, float, float]:
-    """Compute the union bounding box of multiple bboxes."""
-    x0 = min(b[0] for b in bboxes)
-    y0 = min(b[1] for b in bboxes)
-    x1 = max(b[2] for b in bboxes)
-    y1 = max(b[3] for b in bboxes)
-    return (x0, y0, x1, y1)
-
-
-def _snap_locations(
+def _locate_set(
     hw_set: HardwareSet,
     pages_by_num: dict[int, PageData],
 ) -> HardwareSet:
     """
-    Refine each Location in a hardware set by snapping to actual text block
-    bounding boxes from PyMuPDF.
+    Find this set's location by searching all page text blocks for identifying
+    strings from the set_number and description.
 
-    For each location:
-      - Find text blocks on that page referencing the set number or description.
-      - Set bbox to the union of those blocks' bboxes.
-      - Set line_range to (min line_idx, max line_idx) of matched blocks.
-      - If no blocks match, leave bbox/line_range as-is.
+    Extracts search terms like "Doors: D118A", "Item #131", "Set #U-02"
+    from the description, then finds the first text block containing each term.
     """
-    snapped_locations: List[Location] = []
+    search_terms = _extract_search_terms(hw_set.set_number, hw_set.description)
 
-    for loc in hw_set.locations:
-        page_data = pages_by_num.get(loc.page_num)
-        if not page_data:
-            snapped_locations.append(loc)
-            continue
+    locations: list[Location] = []
+    seen_pages: set[int] = set()
 
-        matching = _find_matching_blocks(page_data, hw_set.set_number, hw_set.description)
+    for term in search_terms:
+        term_lower = term.lower()
+        for page_num in sorted(pages_by_num.keys()):
+            if page_num in seen_pages:
+                continue
+            page_data = pages_by_num[page_num]
+            for tb in page_data.text_blocks:
+                if term_lower in tb.text.lower():
+                    locations.append(Location(
+                        page_num=page_num,
+                        bbox=tb.bbox,
+                        line_range=(tb.line_idx, tb.line_idx),
+                    ))
+                    seen_pages.add(page_num)
+                    break
 
-        if matching:
-            bbox = _union_bbox([b.bbox for b in matching])
-            line_idxs = [b.line_idx for b in matching]
-            snapped_locations.append(Location(
-                page_num=loc.page_num,
-                bbox=bbox,
-                line_range=(min(line_idxs), max(line_idxs)),
-            ))
-        else:
-            # No match — keep original location, log a note
-            logger.debug(
-                "No matching text blocks for set %s on page %d",
-                hw_set.set_number, loc.page_num,
-            )
-            snapped_locations.append(loc)
+    if locations:
+        return hw_set.model_copy(update={"locations": locations})
 
-    return hw_set.model_copy(update={"locations": snapped_locations})
+    # Fallback: keep model's locations
+    return hw_set
+
+
+def _extract_search_terms(set_number: str, description: str | None) -> list[str]:
+    """
+    Pull out the best identifying strings to search for in the PDF.
+
+    Prioritizes specific identifiers like door numbers and item references
+    over generic text.
+    """
+    import re
+    terms: list[str] = []
+
+    if description:
+        # "Doors: D118A" or "Doors: D101A, D149A"
+        doors_match = re.search(r'Doors?:\s*([^\n]+)', description, re.IGNORECASE)
+        if doors_match:
+            # Use the first door number as search term
+            door_text = doors_match.group(1).strip()
+            first_door = re.split(r'[,;]', door_text)[0].strip()
+            if first_door:
+                terms.append(first_door)
+
+        # "Item #131" or "Items #8"
+        item_match = re.search(r'Items?\s*#?\s*(\d+)', description)
+        if item_match:
+            terms.append(f'Item #{item_match.group(1)}')
+
+    # Fallback: "Set #N" or "Item #N" using set_number
+    sn = set_number.strip()
+    terms.append(f'Set #{sn}')
+    terms.append(f'Item #{sn}')
+
+    return terms
 
 
 # ---------------------------------------------------------------------------
@@ -212,28 +227,24 @@ def reconcile_sets(
     pages: List[PageData],
 ) -> List[HardwareSet]:
     """
-    Post-process extracted hardware sets: merge multi-page sets and snap locations.
+    Post-process extracted hardware sets: merge multi-page sets and attach bboxes.
 
-    1. Multi-page merging: group by set_number, merge continuations (same number,
-       adjacent pages, <3 components in the later occurrence).
-    2. Bbox snapping: for each location, find matching text blocks from PyMuPDF
-       and compute union bounding box + line range.
+    1. Multi-page merging: group by set_number, merge continuations.
+    2. Bbox attachment: map line_range to PyMuPDF bboxes from ingest.
 
     Args:
         sets: Raw hardware sets from Stage 4 extraction.
         pages: All pages from Stage 1 ingest (for bbox data).
 
     Returns:
-        Reconciled list of HardwareSet with merged components and snapped locations.
+        Reconciled list of HardwareSet with merged components and bboxes.
     """
     if not sets:
         return []
 
-    # Step 1: Merge multi-page sets
     merged = _merge_sets(sets)
 
-    # Step 2: Snap bounding boxes
     pages_by_num = {p.page_num: p for p in pages}
-    snapped = [_snap_locations(s, pages_by_num) for s in merged]
+    result = [_locate_set(s, pages_by_num) for s in merged]
 
-    return snapped
+    return result

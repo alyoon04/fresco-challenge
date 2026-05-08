@@ -21,6 +21,19 @@ A header line like "Set #1" or "SET U-01: VESTIBULE DOORS" followed by component
 **Format C — Pure tabular schedule.**
 A table where each row is one component. Set numbers appear in a column or as row-spanning group headers. Column headers may use abbreviations (QTY, DESC, CAT#, MFG, FIN).
 
+**Format D — Item list with shared component block.**
+A list of "Item #N" entries (each describing a door) followed by a shared block of hardware components that applies to ALL listed items. Example:
+```
+Item #21  1 Single door 113, EXIT VESTIBULE 112 LHR
+Item #22  1 Single door P249, STAIR D P249 LHR
+...
+Item #88  1 Single door C1714, STAIR E C1714 LHR
+914 x 2134 x 44 - HM DR x HM FR - 1.5HR
+204 Standard Hinge TA786 4 1/2" x 4" C26D
+68 Exit Device F-25-R-L-BE 626
+```
+This is ONE hardware set — the item lines list which doors use it, and the component block below defines the hardware. Extract it as a single set. Use the first item number as the set_number (e.g. "21") and include all item numbers in the description. The component block starts after the door size line (e.g. "914 x 2134 x 44").
+
 ## Column classification — CRITICAL
 
 This is the hardest part of extraction. Manufacturer codes and finish codes are both short uppercase strings, and some codes are ambiguous:
