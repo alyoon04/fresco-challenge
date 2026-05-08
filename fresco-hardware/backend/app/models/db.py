@@ -74,6 +74,7 @@ class Document(Base):
         default=DocumentStatus.UPLOADED,
     )
     legend_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     # Relationships
