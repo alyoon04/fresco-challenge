@@ -1,13 +1,6 @@
-/**
- * Root layout for the Fresco Hardware Sets UI.
- *
- * Three-pane interface:
- *   Left:   PDF viewer (react-pdf) with bbox overlays
- *   Center: Extracted hardware sets list
- *   Right:  Set detail / edit panel for feedback corrections
- */
-
 import type { Metadata } from "next";
+import Providers from "./providers";
+import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Fresco — Hardware Sets Extractor",
@@ -21,7 +14,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className="min-h-screen">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

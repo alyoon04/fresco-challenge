@@ -69,7 +69,7 @@ class Document(Base):
     r2_key: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
     page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[DocumentStatus] = mapped_column(
-        Enum(DocumentStatus, name="document_status"),
+        Enum(DocumentStatus, name="document_status", values_callable=lambda e: [x.value for x in e]),
         nullable=False,
         default=DocumentStatus.UPLOADED,
     )

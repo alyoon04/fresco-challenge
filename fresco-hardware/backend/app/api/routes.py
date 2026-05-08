@@ -7,10 +7,13 @@ Endpoints:
   GET    /api/documents/{doc_id}/page/{page_num}      Stream a single PDF page
   PATCH  /api/sets/{set_id}/components/{comp_idx}     Correct an extracted field
   POST   /api/sets/{set_id}/reextract                 Re-run extraction with hint
+  GET    /api/reference/mfr_codes                     Global manufacturer codes
+  GET    /api/reference/finish_codes                  Global finish codes
   GET    /healthz                                     Health check
 """
 
 import io
+import json
 import logging
 import os
 import uuid
@@ -403,3 +406,24 @@ def reextract_set(set_id: int, body: ReextractRequest):
         raise HTTPException(500, str(e))
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Reference data
+# ---------------------------------------------------------------------------
+
+_REF_DIR = Path(__file__).resolve().parent.parent / "reference"
+
+
+@app.get("/api/reference/mfr_codes")
+def get_mfr_codes():
+    """Return global manufacturer code reference list."""
+    with open(_REF_DIR / "mfr_codes.json") as f:
+        return json.load(f)
+
+
+@app.get("/api/reference/finish_codes")
+def get_finish_codes():
+    """Return global finish code reference list."""
+    with open(_REF_DIR / "finish_codes.json") as f:
+        return json.load(f)
