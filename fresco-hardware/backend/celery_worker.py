@@ -12,6 +12,9 @@ Usage:
     celery -A celery_worker worker --loglevel=info
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import logging
 import os
 import traceback
@@ -51,8 +54,9 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_track_started=True,
-    task_acks_late=True,
+    task_acks_late=False,  # Ack immediately so killed tasks don't re-queue on restart
     worker_prefetch_multiplier=1,  # One task at a time (LLM calls are expensive)
+    task_default_expires=300,  # Tasks expire after 5 minutes if not picked up
 )
 
 # ---------------------------------------------------------------------------
@@ -84,13 +88,20 @@ def _load_pdf(doc_id: str) -> bytes:
 
 
 def _update_status(db, doc_id: str, status: DocumentStatus, error: str | None = None):
-    """Update document processing status."""
+    """Update document processing status and notify WebSocket clients."""
     doc = db.get(Document, uuid.UUID(doc_id))
     if doc:
         doc.status = status
         if error is not None:
             doc.error_message = error
         db.commit()
+
+    # Push to WebSocket clients via Redis pub/sub
+    try:
+        from app.api.routes import publish_status
+        publish_status(doc_id, status.value)
+    except Exception:
+        pass
 
 
 def _store_results(db, doc_id: str, sets, pages, legend):

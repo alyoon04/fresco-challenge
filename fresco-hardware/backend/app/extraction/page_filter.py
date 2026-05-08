@@ -33,11 +33,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SET_HEADER_RE = re.compile(
-    r'(?:HARDWARE\s+(?:GROUP|SET)|^\s*Set\s*#)',
+    r'(?:HARDWARE\s+(?:GROUP|SET)|^\s*(?:Set|Item)\s*#?\s*\d|^\s*(?:SET|ITEM)\s+\d)',
     re.IGNORECASE | re.MULTILINE,
 )
 
-_QTY_RE = re.compile(r'\b\d+\s+EA\b', re.IGNORECASE)
+_QTY_RE = re.compile(
+    r'(?:\b\d+\s+EA\b|\b\d+\s+(?:Hinge|Closer|Lock|Cylinder|Pull|Stop|Threshold|Weatherstrip|Mullion|Exit\s+Device|Accessory|Operator|Actuator))',
+    re.IGNORECASE,
+)
 
 # Load known mfr codes for density counting
 _REF_DIR = Path(__file__).resolve().parent.parent / "reference"
@@ -82,16 +85,15 @@ def _count_qty_patterns(text: str) -> int:
     return len(_QTY_RE.findall(text))
 
 
-def _count_mfr_codes(text: str) -> int:
+def _count_known_codes(text: str) -> int:
     """
-    Count how many known manufacturer codes appear as whole words on the page.
+    Count how many known mfr or finish codes appear as whole words on the page.
 
     Uses word-boundary matching to avoid false positives from substrings.
     """
     count = 0
-    # Tokenize to whitespace-separated words, strip punctuation
     words = set(re.findall(r'\b[A-Z0-9]+\b', text.upper()))
-    for code in _MFR_CODES:
+    for code in _ALL_KNOWN_CODES:
         if code in words:
             count += 1
     return count
@@ -113,17 +115,17 @@ def filter_pages(pages: List[PageData]) -> List[CandidatePage]:
         text = page.full_text
         has_header = _has_set_header(text)
         qty_count = _count_qty_patterns(text)
-        mfr_count = _count_mfr_codes(text)
+        code_count = _count_known_codes(text)
 
         # Conjunction filter logic
         is_candidate = (
-            (has_header and (mfr_count >= 2 or qty_count >= 2))
+            (has_header and (code_count >= 2 or qty_count >= 2))
             or
-            (mfr_count >= 4 and qty_count >= 5)
+            (code_count >= 4 and qty_count >= 5)
         )
 
         if is_candidate:
-            score = int(has_header) + qty_count + mfr_count
+            score = int(has_header) + qty_count + code_count
             candidates.append(CandidatePage(
                 page_num=page.page_num,
                 full_text=text,

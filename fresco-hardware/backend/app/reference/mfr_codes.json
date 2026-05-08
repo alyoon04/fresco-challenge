@@ -4,6 +4,7 @@
     "IVE": "Ives",
     "LCN": "LCN",
     "SCH": "Schlage",
+    "SC": "Schlage",
     "VON": "Von Duprin",
     "MK": "McKinney",
     "RIX": "Rixson",
@@ -23,7 +24,20 @@
     "SDC": "SDC",
     "CMND": "Command Access",
     "SCE": "Schlage Electronics",
-    "ORG": "Schlage Original"
+    "ORG": "Schlage Original",
+    "EPT": "EPT / Epco",
+    "DOR": "Dorma",
+    "ABH": "ABH",
+    "ADA": "Adams Rite",
+    "COR": "Corbin Russwin",
+    "FAL": "Falcon",
+    "KAL": "Kaba",
+    "MAR": "Marks",
+    "NGP": "National Guard Products",
+    "PDQ": "PDQ",
+    "SEC": "Securitron",
+    "STA": "Stanley",
+    "YAL": "Yale"
   },
-  "ambiguous": ["PE", "NO"]
+  "ambiguous": ["PE", "NO", "SC", "DE"]
 }

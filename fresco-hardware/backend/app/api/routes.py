@@ -12,6 +12,9 @@ Endpoints:
   GET    /healthz                                     Health check
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import io
 import json
 import logging
@@ -20,8 +23,10 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+import asyncio
+
 import fitz  # PyMuPDF
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -280,6 +285,19 @@ def get_document(doc_id: str):
         db.close()
 
 
+@app.get("/api/documents/{doc_id}/pdf")
+def get_full_pdf(doc_id: str):
+    """Stream the full PDF for the frontend viewer."""
+    pdf_path = _pdf_path(doc_id)
+    if not pdf_path.exists():
+        raise HTTPException(404, "PDF file not found")
+    return StreamingResponse(
+        open(pdf_path, "rb"),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename={doc_id}.pdf"},
+    )
+
+
 @app.get("/api/documents/{doc_id}/page/{page_num}")
 def get_page_pdf(doc_id: str, page_num: int):
     """
@@ -427,3 +445,90 @@ def get_finish_codes():
     """Return global finish code reference list."""
     with open(_REF_DIR / "finish_codes.json") as f:
         return json.load(f)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — push document status updates via Redis pub/sub
+# ---------------------------------------------------------------------------
+
+def publish_status(doc_id: str, status: str, extra: dict | None = None):
+    """Publish a status change to Redis so WebSocket clients get notified.
+
+    Call this from the Celery worker whenever Document.status changes.
+    """
+    try:
+        import redis as redis_lib
+        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        r = redis_lib.from_url(redis_url)
+        payload = json.dumps({"status": status, **(extra or {})})
+        r.publish(f"doc:{doc_id}", payload)
+    except Exception:
+        pass  # Redis down — clients fall back to polling
+
+
+@app.websocket("/ws/documents/{doc_id}")
+async def ws_document_status(ws: WebSocket, doc_id: str):
+    """Stream document status updates to the frontend.
+
+    Sends the current status on connect, then pushes Redis pub/sub messages
+    until the client disconnects or status reaches a terminal state.
+    """
+    await ws.accept()
+
+    # Send current status immediately
+    db = _get_db()
+    try:
+        doc = db.execute(
+            select(Document).where(Document.id == doc_id)
+        ).scalar_one_or_none()
+        if doc:
+            status_val = doc.status.value if hasattr(doc.status, "value") else doc.status
+            await ws.send_json({"status": status_val})
+            if status_val in ("done", "failed"):
+                await ws.close()
+                return
+    finally:
+        db.close()
+
+    # Subscribe to Redis channel for this document
+    try:
+        import redis as redis_lib
+        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        r = redis_lib.from_url(redis_url)
+        pubsub = r.pubsub()
+        pubsub.subscribe(f"doc:{doc_id}")
+    except Exception:
+        # No Redis — fall back to simple polling loop
+        try:
+            while True:
+                await asyncio.sleep(3)
+                db = _get_db()
+                try:
+                    doc = db.execute(
+                        select(Document).where(Document.id == doc_id)
+                    ).scalar_one_or_none()
+                    if doc:
+                        status_val = doc.status.value if hasattr(doc.status, "value") else doc.status
+                        await ws.send_json({"status": status_val})
+                        if status_val in ("done", "failed"):
+                            break
+                finally:
+                    db.close()
+        except WebSocketDisconnect:
+            pass
+        return
+
+    # Listen for pub/sub messages
+    try:
+        while True:
+            msg = await asyncio.to_thread(pubsub.get_message, ignore_subscribe_messages=True, timeout=1.0)
+            if msg and msg["type"] == "message":
+                data = json.loads(msg["data"])
+                await ws.send_json(data)
+                if data.get("status") in ("done", "failed"):
+                    break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        pubsub.unsubscribe()
+        pubsub.close()

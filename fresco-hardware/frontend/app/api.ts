@@ -68,6 +68,10 @@ export async function fetchDocument(docId: string): Promise<DocumentData> {
   return res.json();
 }
 
+export function pdfUrl(docId: string): string {
+  return `${API_BASE}/api/documents/${docId}/pdf`;
+}
+
 export function pageUrl(docId: string, pageNum: number): string {
   return `${API_BASE}/api/documents/${docId}/page/${pageNum}`;
 }

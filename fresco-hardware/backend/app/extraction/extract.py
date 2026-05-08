@@ -1,9 +1,9 @@
 """
 Stage 4: Hardware Set Extraction
 
-Sends batches of 3-5 schedule pages to Claude Opus 4.7 (claude-opus-4-7) using
-native PDF input. Uses structured output via tool use to return hardware sets,
-components, and per-field confidence scores.
+Sends batches of schedule pages to Claude Sonnet 4.6 using native PDF input.
+Uses structured output via tool use to return hardware sets, components, and
+per-field confidence scores.
 
 Key responsibility: manufacturer vs. finish column disambiguation.
   - Classifies columns by majority membership in known mfr/finish reference sets
@@ -20,6 +20,7 @@ import base64
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, List
 
@@ -34,9 +35,10 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_OPUS_MODEL = "claude-opus-4-7"
-_MAX_TOKENS = 8000
+_MODEL = "claude-sonnet-4-6"
+_MAX_TOKENS = 16000
 _BATCH_SIZE = 4
+_MAX_PARALLEL = 4
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extraction_system.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text()
@@ -137,10 +139,10 @@ def _extract_batch(
 
     start_time = time.time()
 
-    response = client.messages.create(
-        model=_OPUS_MODEL,
+    # Use streaming to support large max_tokens (>10 min requests)
+    response = client.messages.stream(
+        model=_MODEL,
         max_tokens=_MAX_TOKENS,
-        temperature=0,
         system=[
             {
                 "type": "text",
@@ -176,10 +178,13 @@ def _extract_batch(
         tool_choice={"type": "tool", "name": "record_hardware_sets"},
     )
 
+    with response as stream:
+        final_message = stream.get_final_message()
+
     elapsed = time.time() - start_time
 
     # Log usage metrics
-    usage = response.usage
+    usage = final_message.usage
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
     cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
     total_input = usage.input_tokens
@@ -187,13 +192,13 @@ def _extract_batch(
     logger.info(
         "Batch [pages %s] | model=%s | input=%d tokens | output=%d tokens | "
         "cache_read=%d | cache_create=%d | cache_ratio=%.1f%% | latency=%.1fs",
-        batch_pages_str, _OPUS_MODEL, total_input, usage.output_tokens,
+        batch_pages_str, _MODEL, total_input, usage.output_tokens,
         cache_read, cache_create, cache_ratio * 100, elapsed,
     )
 
     # Parse tool call response
     sets: List[HardwareSet] = []
-    for block in response.content:
+    for block in final_message.content:
         if block.type == "tool_use" and block.name == "record_hardware_sets":
             raw_sets = block.input.get("hardware_sets", [])
             for raw in raw_sets:
@@ -257,37 +262,41 @@ def extract_sets_from_pages(
     tool = _build_tool_schema()
     all_sets: List[HardwareSet] = []
 
-    # Process in batches
+    # Prepare all batches
+    batches = []
     for batch_start in range(0, len(page_indices), _BATCH_SIZE):
         batch_indices = page_indices[batch_start : batch_start + _BATCH_SIZE]
-
-        # Build mapping: position in batch PDF → original page number
         page_mapping = {i: orig for i, orig in enumerate(batch_indices)}
-
-        # Slice the original PDF to just this batch's pages
         batch_pdf = _slice_pdf(pdf_bytes, batch_indices)
+        batches.append((batch_indices, page_mapping, batch_pdf))
 
-        # Attempt extraction with one retry
+    def _run_batch(args):
+        batch_indices, page_mapping, batch_pdf = args
         for attempt in range(2):
             try:
-                batch_sets = _extract_batch(
+                return _extract_batch(
                     batch_pdf, page_mapping, legend, anthropic_client, tool,
                 )
-                all_sets.extend(batch_sets)
-                break
             except Exception as e:
                 if attempt == 0:
-                    wait = 2.0
                     logger.warning(
-                        "Batch [pages %s] failed (attempt 1), retrying in %.0fs: %s",
-                        batch_indices, wait, e,
+                        "Batch [pages %s] failed (attempt 1), retrying in 2s: %s",
+                        batch_indices, e,
                     )
-                    time.sleep(wait)
+                    time.sleep(2.0)
                 else:
                     logger.error(
                         "Batch [pages %s] failed after retry, skipping: %s",
                         batch_indices, e,
                     )
+        return []
+
+    # Process batches in parallel
+    with ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as executor:
+        futures = {executor.submit(_run_batch, b): b[0] for b in batches}
+        for future in as_completed(futures):
+            batch_sets = future.result()
+            all_sets.extend(batch_sets)
 
     logger.info("Extraction complete: %d total sets from %d pages", len(all_sets), len(page_indices))
     return all_sets

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchDocument } from "@/app/api";
 import PdfViewer from "@/components/PdfViewer";
 import SetList from "@/components/SetList";
@@ -11,16 +11,36 @@ import ReextractButton from "@/components/ReextractButton";
 export default function DocumentPage({ params }: { params: { id: string } }) {
   const { id } = params;
   const [selectedSetId, setSelectedSetId] = useState<number | null>(null);
+  const queryClient = useQueryClient();
 
   const { data: doc, isLoading, error } = useQuery({
     queryKey: ["document", id],
     queryFn: () => fetchDocument(id),
-    refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      // Poll while processing
-      return status === "processing" || status === "uploaded" ? 3000 : false;
-    },
   });
+
+  // WebSocket: listen for status changes, refetch when notified
+  useEffect(() => {
+    const status = doc?.status;
+    if (status === "done" || status === "failed") return;
+
+    const wsBase = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000")
+      .replace(/^http/, "ws");
+    const ws = new WebSocket(`${wsBase}/ws/documents/${id}`);
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      queryClient.invalidateQueries({ queryKey: ["document", id] });
+      if (data.status === "done" || data.status === "failed") {
+        ws.close();
+      }
+    };
+
+    ws.onerror = () => ws.close();
+
+    return () => {
+      if (ws.readyState <= WebSocket.OPEN) ws.close();
+    };
+  }, [id, doc?.status, queryClient]);
 
   if (isLoading) return <div className="p-8 text-gray-500">Loading document...</div>;
   if (error) return <div className="p-8 text-red-500">Error: {String(error)}</div>;
@@ -28,14 +48,15 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
 
   const selectedSet = doc.sets.find((s) => s.id === selectedSetId) ?? null;
 
-  // Jump PDF to the first page of the selected set
   const selectedLocations = selectedSet?.locations ?? [];
+  const scrollToPage = selectedLocations.length > 0 ? selectedLocations[0].page_num : null;
 
   return (
     <div className="h-screen flex flex-col">
       {/* Header */}
       <header className="px-4 py-2 border-b bg-white flex items-center justify-between">
-        <div>
+        <div className="flex items-center gap-3">
+          <a href="/" className="text-sm text-blue-600 hover:text-blue-800">&larr; Home</a>
           <h1 className="text-lg font-semibold">{doc.filename}</h1>
           <span className="text-xs text-gray-400">
             {doc.page_count} pages &middot;{" "}
@@ -62,7 +83,7 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
       <div className="flex-1 flex overflow-hidden">
         {/* Left: PDF viewer */}
         <div className="w-1/2 border-r">
-          <PdfViewer docId={id} pageCount={doc.page_count} locations={selectedLocations} />
+          <PdfViewer docId={id} pageCount={doc.page_count} locations={selectedLocations} scrollToPage={scrollToPage} />
         </div>
 
         {/* Center: Set list */}

@@ -80,7 +80,6 @@ def _call_haiku(page_text: str, client: Any) -> dict:
     response = client.messages.create(
         model=_HAIKU_MODEL,
         max_tokens=_MAX_TOKENS,
-        temperature=0,
         system=_SYSTEM_PROMPT,
         messages=[
             {
