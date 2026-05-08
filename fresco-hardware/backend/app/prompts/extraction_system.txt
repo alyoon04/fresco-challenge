@@ -1,0 +1,8 @@
+# Stage 4: Hardware Set Extraction — System Prompt
+# TODO: implement full extraction prompt for Opus 4.7
+# This prompt will instruct the model to:
+#   - Identify hardware sets and their components from schedule pages
+#   - Classify columns as manufacturer vs. finish using context clues
+#   - Output structured data matching the HardwareSet/Component schema
+#   - Include per-field confidence scores
+#   - Record column classification reasoning

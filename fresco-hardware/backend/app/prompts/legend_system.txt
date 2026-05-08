@@ -1,0 +1,6 @@
+# Stage 3: Legend Extraction — System Prompt
+# TODO: implement full legend extraction prompt for Haiku 4.5
+# This prompt will instruct the model to:
+#   - Find manufacturer abbreviation lists (e.g., "SCH = Schlage")
+#   - Find finish code lists (e.g., "US26D = Satin Chrome")
+#   - Return structured mappings of code -> full name
