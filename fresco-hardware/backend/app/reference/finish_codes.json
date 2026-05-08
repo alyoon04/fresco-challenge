@@ -1,19 +1,23 @@
-[
-  "626",
-  "630",
-  "652",
-  "689",
-  "US26D",
-  "US32D",
-  "US10B",
-  "BSP",
-  "USP",
-  "MIL",
-  "ALM",
-  "CLR",
-  "S",
-  "BLU",
-  "BLACK",
-  "GREY",
-  "ALM"
-]
+{
+  "codes": {
+    "626": "Satin Chromium Plated",
+    "630": "Satin Stainless Steel",
+    "652": "Satin Chromium Plated on Steel",
+    "689": "Aluminum Painted",
+    "US26D": "Satin Chromium Plated",
+    "US32D": "Satin Stainless Steel",
+    "US10B": "Oil Rubbed Bronze",
+    "BSP": "Black Suede Powder",
+    "USP": "Spray Primed",
+    "MIL": "Mill Finish",
+    "ALM": "Sprayed Aluminum",
+    "CLR": "Clear Anodized",
+    "S": "Charcoal",
+    "BLU": "Blue",
+    "BLACK": "Black",
+    "GREY": "Grey",
+    "AL": "Aluminum",
+    "LS": "Luma Sheen"
+  },
+  "ambiguous": []
+}
