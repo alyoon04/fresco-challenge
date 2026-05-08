@@ -9,6 +9,17 @@ interface Props {
   onSelect: (id: number) => void;
 }
 
+/**
+ * Extract a display title and subtitle from a hardware set.
+ * Adaptively picks the most identifying text from the description.
+ */
+function getSetDisplay(s: HardwareSet): { title: string; subtitle: string | null } {
+  const desc = s.description || "";
+  if (!desc) return { title: s.set_number, subtitle: null };
+  if (desc.length <= 80) return { title: desc, subtitle: null };
+  return { title: desc.slice(0, 75) + "…", subtitle: null };
+}
+
 function confidencePill(confidence: number) {
   let bg = "bg-green-100 text-green-800";
   if (confidence < 0.5) bg = "bg-red-100 text-red-800";
@@ -51,6 +62,7 @@ export default function SetList({ sets, selectedId, onSelect }: Props) {
     const q = query.toLowerCase();
     return sorted.filter(
       (s) =>
+        s.set_number.toLowerCase().includes(q) ||
         s.description?.toLowerCase().includes(q) ||
         s.components.some(
           (c) =>
@@ -88,20 +100,28 @@ export default function SetList({ sets, selectedId, onSelect }: Props) {
           }`}
           onClick={() => onSelect(s.id)}
         >
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-800 truncate">
-              {s.description || s.set_number}
-            </span>
-            {s.is_not_used && (
-              <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded shrink-0">NOT USED</span>
-            )}
-          </div>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-xs text-gray-400">
-              {s.components.length} component{s.components.length !== 1 ? "s" : ""}
-            </span>
-            {confidencePill(s.overall_confidence)}
-          </div>
+          {(() => {
+            const { title, subtitle } = getSetDisplay(s);
+            return (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-gray-800">{title}</span>
+                  {s.is_not_used && (
+                    <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded shrink-0">NOT USED</span>
+                  )}
+                </div>
+                {subtitle && (
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">{subtitle}</p>
+                )}
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-xs text-gray-400">
+                    {s.components.length} component{s.components.length !== 1 ? "s" : ""}
+                  </span>
+                  {confidencePill(s.overall_confidence)}
+                </div>
+              </>
+            );
+          })()}
         </li>
       ))}
     </ul>

@@ -15,15 +15,40 @@ interface Props {
   searchKey: number;
 }
 
+/**
+ * Search the actual PDF text content (not DOM) to find which page contains
+ * the query. This works regardless of which pages are currently rendered.
+ */
+async function findPageWithText(
+  pdfDocProxy: pdfjs.PDFDocumentProxy,
+  query: string,
+): Promise<number | null> {
+  const q = query.toLowerCase();
+  for (let i = 1; i <= pdfDocProxy.numPages; i++) {
+    const page = await pdfDocProxy.getPage(i);
+    const textContent = await page.getTextContent();
+    const pageText = textContent.items
+      .map((item) => ("str" in item ? item.str : ""))
+      .join(" ")
+      .toLowerCase();
+    if (pageText.includes(q)) {
+      return i;
+    }
+  }
+  return null;
+}
+
 export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: Props) {
   const [numPages, setNumPages] = useState<number>(pageCount);
   const containerRef = useRef<HTMLDivElement>(null);
   const [pageWidth, setPageWidth] = useState(700);
   const highlightRef = useRef<HTMLDivElement | null>(null);
+  const pdfDocRef = useRef<pdfjs.PDFDocumentProxy | null>(null);
 
   const onDocumentLoadSuccess = useCallback(
-    ({ numPages: n }: { numPages: number }) => {
-      setNumPages(n);
+    (pdf: pdfjs.PDFDocumentProxy) => {
+      pdfDocRef.current = pdf;
+      setNumPages(pdf.numPages);
       if (containerRef.current) {
         setPageWidth(Math.min(containerRef.current.clientWidth - 32, 900));
       }
@@ -31,7 +56,7 @@ export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: 
     [],
   );
 
-  // Search the rendered text layer for the query and highlight + scroll to it
+  // Search PDF text content to find correct page, scroll there, then highlight
   useEffect(() => {
     if (!searchQuery || !containerRef.current) return;
 
@@ -42,17 +67,33 @@ export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: 
     }
 
     const query = searchQuery.toLowerCase();
+    let cancelled = false;
 
-    // Small delay to let text layers render
-    const timer = setTimeout(() => {
+    async function doSearch() {
       const container = containerRef.current;
-      if (!container) return;
+      if (!container || !pdfDocRef.current) return;
 
-      // Search all text layer spans
-      const spans = container.querySelectorAll<HTMLSpanElement>(".react-pdf__Page__textContent span");
+      // Search actual PDF text content for the correct page
+      const targetPage = await findPageWithText(pdfDocRef.current, query);
+      if (cancelled || !targetPage) return;
+
+      // Scroll to the target page element
+      const pageElements = container.querySelectorAll(".react-pdf__Page");
+      const targetEl = pageElements[targetPage - 1];
+      if (!targetEl) return;
+
+      targetEl.scrollIntoView({ behavior: "smooth", block: "start" });
+
+      // Wait for the page to scroll into view and text layer to render
+      await new Promise((r) => setTimeout(r, 600));
+      if (cancelled) return;
+
+      // Now search the rendered text layer spans on that page for highlighting
+      const spans = targetEl.querySelectorAll<HTMLSpanElement>(
+        ".react-pdf__Page__textContent span",
+      );
       for (const span of spans) {
         if (span.textContent && span.textContent.toLowerCase().includes(query)) {
-          // Create highlight overlay
           const page = span.closest(".react-pdf__Page") as HTMLElement;
           if (!page) continue;
 
@@ -71,7 +112,6 @@ export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: 
           highlight.style.pointerEvents = "none";
           highlight.style.zIndex = "10";
 
-          // The page wrapper with relative positioning
           const wrapper = page.parentElement;
           if (wrapper) {
             wrapper.style.position = "relative";
@@ -79,15 +119,16 @@ export default function PdfViewer({ docId, pageCount, searchQuery, searchKey }: 
             highlightRef.current = highlight;
           }
 
-          // Scroll to it
+          // Fine-tune scroll to center on the match
           span.scrollIntoView({ behavior: "smooth", block: "center" });
           return;
         }
       }
-    }, 300);
+    }
 
-    return () => clearTimeout(timer);
-  }, [searchQuery, searchKey]);
+    doSearch();
+    return () => { cancelled = true; };
+  }, [searchQuery, searchKey, docId]);
 
   return (
     <div className="flex flex-col h-full">
