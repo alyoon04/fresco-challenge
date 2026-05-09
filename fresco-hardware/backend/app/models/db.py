@@ -23,6 +23,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
 )
@@ -73,6 +74,7 @@ class Document(Base):
         nullable=False,
         default=DocumentStatus.UPLOADED,
     )
+    pdf_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     legend_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)

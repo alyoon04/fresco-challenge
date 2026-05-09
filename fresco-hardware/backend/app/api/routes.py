@@ -126,6 +126,22 @@ def _pdf_path(doc_id: str) -> Path:
     return _UPLOAD_DIR / f"{doc_id}.pdf"
 
 
+def _load_pdf_bytes(doc_id: str) -> bytes:
+    """Load PDF bytes from local disk or database."""
+    pdf_path = _pdf_path(doc_id)
+    if pdf_path.exists():
+        return pdf_path.read_bytes()
+    # Fall back to database
+    db = _get_db()
+    try:
+        doc = db.get(Document, doc_id)
+        if doc and doc.pdf_data:
+            return doc.pdf_data
+    finally:
+        db.close()
+    raise FileNotFoundError(f"PDF not found for doc {doc_id}")
+
+
 def _serialize_set(row: HardwareSetRecord) -> dict:
     """Serialize a HardwareSetRecord to a JSON-safe dict."""
     return {
@@ -237,7 +253,7 @@ def upload_document(file: UploadFile = File(...)):
     doc_id = str(uuid.uuid4())
     r2_key = f"documents/{doc_id}/{file.filename}"
 
-    # Store locally in dev
+    # Store locally as fallback
     pdf_path = _pdf_path(doc_id)
     pdf_path.write_bytes(pdf_bytes)
 
@@ -249,7 +265,7 @@ def upload_document(file: UploadFile = File(...)):
     except Exception:
         page_count = 0
 
-    # Create DB record
+    # Create DB record (store PDF bytes in DB for deployed environments)
     db = _get_db()
     try:
         db_doc = Document(
@@ -258,6 +274,7 @@ def upload_document(file: UploadFile = File(...)):
             r2_key=r2_key,
             page_count=page_count,
             status=DocumentStatus.UPLOADED,
+            pdf_data=pdf_bytes,
         )
         db.add(db_doc)
         db.commit()
@@ -314,11 +331,12 @@ def get_document(doc_id: str):
 @app.get("/api/documents/{doc_id}/pdf")
 def get_full_pdf(doc_id: str):
     """Stream the full PDF for the frontend viewer."""
-    pdf_path = _pdf_path(doc_id)
-    if not pdf_path.exists():
+    try:
+        pdf_bytes = _load_pdf_bytes(doc_id)
+    except FileNotFoundError:
         raise HTTPException(404, "PDF file not found")
     return StreamingResponse(
-        open(pdf_path, "rb"),
+        io.BytesIO(pdf_bytes),
         media_type="application/pdf",
         headers={"Content-Disposition": f"inline; filename={doc_id}.pdf"},
     )
@@ -331,12 +349,13 @@ def get_page_pdf(doc_id: str, page_num: int):
 
     Returns a minimal PDF containing just the requested page.
     """
-    pdf_path = _pdf_path(doc_id)
-    if not pdf_path.exists():
+    try:
+        pdf_bytes = _load_pdf_bytes(doc_id)
+    except FileNotFoundError:
         raise HTTPException(404, "PDF file not found")
 
     try:
-        src = fitz.open(str(pdf_path))
+        src = fitz.open(stream=pdf_bytes, filetype="pdf")
         if page_num < 0 or page_num >= len(src):
             src.close()
             raise HTTPException(400, f"Page {page_num} out of range (0-{len(src)-1})")

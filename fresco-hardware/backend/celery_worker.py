@@ -83,10 +83,18 @@ _UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 # ---------------------------------------------------------------------------
 
 def _load_pdf(doc_id: str) -> bytes:
-    """Load PDF bytes from local storage (dev) or R2 (prod)."""
+    """Load PDF bytes from local storage or database."""
     pdf_path = _UPLOAD_DIR / f"{doc_id}.pdf"
     if pdf_path.exists():
         return pdf_path.read_bytes()
+    # Fall back to database (deployed environments without shared disk)
+    db = SessionLocal()
+    try:
+        doc = db.get(Document, uuid.UUID(doc_id))
+        if doc and doc.pdf_data:
+            return doc.pdf_data
+    finally:
+        db.close()
     raise FileNotFoundError(f"PDF not found for doc {doc_id}")
 
 
