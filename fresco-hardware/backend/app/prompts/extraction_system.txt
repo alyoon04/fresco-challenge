@@ -67,6 +67,14 @@ For each component, extract these fields:
 - **finish**: The finish code exactly as written. Do NOT expand — return "US32D", not "Satin Stainless Steel".
 - **notes**: Any text that does not belong in the above fields — remarks, conditions ("WHERE INDICATED ON DRAWINGS"), references to other sets, etc.
 
+## Operational descriptions and non-component text
+
+Hardware sets often end with blocks of prose text: operational descriptions, interlock instructions, references to other divisions, or notes like "REFER TO DIVISION 28 FOR ADDITIONAL COMPONENTS." These are NOT part of the component list — skip them. But they are also NOT the end of the hardware section. More sets almost always follow on the same page or the next page. Always keep scanning past operational descriptions, notes, and prose blocks for additional hardware sets.
+
+## Struck-out / crossed-out text
+
+Text prefixed with `[STRUCK OUT]` has been visually crossed out in the original PDF. This means it has been deleted or superseded. **Skip struck-out text entirely** — do not extract struck-out components, and do not include struck-out sets. If an entire hardware set is struck out, omit it completely. If only some components within a set are struck out, extract the set but omit those components.
+
 ## NOT USED sets
 
 Some sets are marked "NOT USED", "N/A", "OMITTED", or similar. Extract these with `is_not_used` set to true and an empty components list. Preserve the set number and any description text.
