@@ -60,16 +60,23 @@
 - The model consistently reports wrong page numbers (off by 1) and line ranges that don't match PyMuPDF's `line_idx` values (model says 1-50, PyMuPDF uses 0-8)
 - Multiple attempts at "snapping" model locations to real bboxes failed due to format-specific regex, false positives, and numbering mismatches
 
-**Solution: text search from description**
-- After reconciliation, search ALL page text blocks for identifying strings from the set's description
-- Extract search terms: door numbers ("D144B"), item references ("Item #131"), set references ("Set #U-02")
-- First match wins — gives correct page + PyMuPDF bbox for highlighting
-- Works across all document formats without format-specific logic
+**Backend location refinement (`_locate_set`)**
+- After reconciliation, search nearby pages (model's pages ±2) for identifying strings
+- Constrained to nearby pages to avoid false positives from generic terms matching on unrelated pages (e.g., standards sections early in the PDF)
+- Falls back to model's original locations if text search finds nothing
+
+**Frontend: pdf.js text search + DOM span highlighting**
+- All page texts indexed once on PDF load via `pdfjs.getTextContent()` — instant search thereafter
+- Search terms derived from set description using progressive prefix truncation: "Set: 2.0 — Single Opening – Access Controlled" → try full string, then "Set: 2.0 — Single Opening", then "Set: 2.0" (keeps identifier intact, tries most specific first)
+- Highlights rendered by finding matching DOM spans in react-pdf's text layer, computing bounding box, and overlaying a positioned div
+- Polls for span dimensions (200ms intervals) since text layer renders asynchronously for distant pages
 
 **What didn't work (and why)**
-- Regex matching for "Item #N" / "Set #N" on declared page ±1: false positives from "set" appearing in prose ("closed and locked... set")
-- Line range lookup: model's line numbers are in a completely different numbering system than PyMuPDF
-- Bbox snapping from text blocks: required format-specific patterns, broke on new doc formats
+- Backend-only locations: `_locate_set` searched ALL pages for generic terms, producing false positives on early pages
+- Catalog numbers / component descriptions as search terms: these appear in spec/standards sections early in the PDF, not just in hardware set tables
+- Short set identifiers ("1.0", "#4"): too generic, match unrelated text everywhere
+- Fixed 600ms timeout for text layer render: insufficient for distant pages, spans had zero dimensions
+- Index-based span matching (mapping pdf.js text item index to DOM span index): react-pdf DOM structure doesn't match pdf.js item ordering
 
 ### Reconciliation
 

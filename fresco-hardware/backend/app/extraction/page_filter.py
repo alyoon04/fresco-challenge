@@ -33,13 +33,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SET_HEADER_RE = re.compile(
-    r'(?:HARDWARE\s+(?:GROUP|SET)|^\s*(?:Set|Item)\s*#?\s*\d|^\s*(?:SET|ITEM)\s+\d)',
+    r'(?:'
+    r'HARDWARE\s+(?:GROUP|SET)'                          # "Hardware Group" / "Hardware Set"
+    r'|^\s*(?:Set|Item)\s*#\s*[A-Za-z0-9]'              # "Set #5", "Item #EX-4", requires #
+    r'|^\s*(?:Set|Item)\s*:\s*[A-Za-z0-9]'              # "Set: EX-4.0", requires :
+    r'|^\s*(?:Set|Item)\s+\d'                            # "Set 5", "Item 21", digit after space
+    r'|^\s*(?:SET|ITEM)\s+[A-Z]{1,3}[\s-]?\d'           # "SET EX-4", "ITEM AL 01", short alpha prefix + digit
+    r'|^\s*Heading\s*#?\s*\d'                            # "Heading #17", "Heading 5"
+    r')',
     re.IGNORECASE | re.MULTILINE,
 )
 
 _QTY_RE = re.compile(
-    r'(?:\b\d+\s+EA\b|\b\d+\s+(?:Hinge|Closer|Lock|Cylinder|Pull|Stop|Threshold|Weatherstrip|Mullion|Exit\s+Device|Accessory|Operator|Actuator))',
+    r'\b\d+\s+EA\b',
     re.IGNORECASE,
+)
+
+# Lines that look like hardware component rows: start with a small integer (1-9)
+# followed by text (not a page number, section number, or date).
+# Matches "1 Continuous Hinge FMHD1 Pemko", "2 Surface Closer UNI-7500 Norton", etc.
+_COMPONENT_LINE_RE = re.compile(
+    r'^\s*[1-9]\d?\s+[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]',
+    re.MULTILINE,
 )
 
 # Load known mfr codes for density counting
@@ -85,6 +100,16 @@ def _count_qty_patterns(text: str) -> int:
     return len(_QTY_RE.findall(text))
 
 
+def _count_component_lines(text: str) -> int:
+    """Count lines that look like hardware component rows.
+
+    Matches lines starting with a small integer followed by capitalized words,
+    e.g. '1 Continuous Hinge FMHD1 Pemko'. This is a structural signal that
+    works regardless of specific component/manufacturer names.
+    """
+    return len(_COMPONENT_LINE_RE.findall(text))
+
+
 def _count_known_codes(text: str) -> int:
     """
     Count how many known mfr or finish codes appear as whole words on the page.
@@ -116,16 +141,20 @@ def filter_pages(pages: List[PageData]) -> List[CandidatePage]:
         has_header = _has_set_header(text)
         qty_count = _count_qty_patterns(text)
         code_count = _count_known_codes(text)
+        comp_lines = _count_component_lines(text)
 
-        # Conjunction filter logic
+        # A page is a candidate if it has enough structural signals.
+        # qty_count covers "3 EA" style, comp_lines covers "1 Continuous Hinge" style.
+        line_count = qty_count + comp_lines
+
         is_candidate = (
-            (has_header and (code_count >= 2 or qty_count >= 2))
+            (has_header and (code_count >= 2 or line_count >= 3))
             or
-            (code_count >= 4 and qty_count >= 5)
+            (code_count >= 4 and line_count >= 5)
         )
 
         if is_candidate:
-            score = int(has_header) + qty_count + code_count
+            score = int(has_header) + line_count + code_count
             candidates.append(CandidatePage(
                 page_num=page.page_num,
                 full_text=text,

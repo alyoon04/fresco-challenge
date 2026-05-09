@@ -30,6 +30,25 @@ def _sets_overlap(a: HardwareSet, b: HardwareSet) -> bool:
     return bool(a_pages & b_pages)
 
 
+def _candidate_has_own_header(candidate: HardwareSet) -> bool:
+    """
+    Check if the candidate looks like an independent set with its own header,
+    vs. orphaned continuation rows from a page break.
+
+    A continuation typically has no description (or re-uses the same one),
+    because the header was on the previous page. An independent set with the
+    same number would have its own distinct header line.
+    """
+    # No description at all — almost certainly a continuation
+    if not candidate.description:
+        return False
+    # Very short description that's just the set number — likely a continuation
+    desc = candidate.description.strip()
+    if desc == candidate.set_number.strip():
+        return False
+    return True
+
+
 def _should_merge(primary: HardwareSet, candidate: HardwareSet) -> bool:
     """
     Decide whether `candidate` is a continuation of `primary` (same set
@@ -38,9 +57,10 @@ def _should_merge(primary: HardwareSet, candidate: HardwareSet) -> bool:
 
     Rules:
       - Same set_number.
-      - Pages are near-adjacent (within 2 pages of each other).
-      - The candidate has fewer than 3 components (a full independent set
-        would typically have 3+; a continuation fragment has 1-2 leftover rows).
+      - Overlapping pages (batch overlap) — always merge.
+      - Pages are near-adjacent (within 2 pages) AND the candidate looks
+        like a continuation (no independent header) — merge regardless of
+        how many components it has.
     """
     if primary.set_number != candidate.set_number:
         return False
@@ -63,7 +83,14 @@ def _should_merge(primary: HardwareSet, candidate: HardwareSet) -> bool:
     if min_gap > 2:
         return False
 
-    # Continuation heuristic: the later occurrence has few components
+    # Adjacent pages with same set_number: merge unless the candidate
+    # clearly has its own independent header (a distinct re-use of the
+    # same set number, which is rare but possible).
+    if not _candidate_has_own_header(candidate):
+        return True
+
+    # Has its own header but few components — still likely a continuation
+    # where the model repeated the header text
     return len(candidate.components) < 3
 
 
@@ -100,9 +127,101 @@ def _merge_two_sets(primary: HardwareSet, candidate: HardwareSet) -> HardwareSet
     )
 
 
+def _components_overlap(a: HardwareSet, b: HardwareSet) -> bool:
+    """
+    Check if two sets share most of the same components (by description+catalog).
+    Used to detect Format D duplicates from overlapping batches where the
+    set_number differs (e.g. "21" vs "67") because each batch used a different
+    first item number.
+    """
+    if not a.components or not b.components:
+        return False
+
+    def _comp_keys(s: HardwareSet) -> set:
+        return {
+            (c.description.value, c.catalog_number.value if c.catalog_number else None)
+            for c in s.components
+        }
+
+    a_keys = _comp_keys(a)
+    b_keys = _comp_keys(b)
+    if not a_keys or not b_keys:
+        return False
+
+    overlap = len(a_keys & b_keys)
+    smaller = min(len(a_keys), len(b_keys))
+    # If 70%+ of the smaller set's components match, they're the same set
+    return overlap >= smaller * 0.7
+
+
+def _dedup_format_d(sets: List[HardwareSet]) -> List[HardwareSet]:
+    """
+    Remove Format D duplicates from overlapping batches.
+
+    When a Format D item list spans pages, overlapping batches may each produce
+    a set with different set_numbers (first item on their visible page) but
+    identical components. Keep the one with more items (broader description)
+    and drop the subset.
+    """
+    if len(sets) < 2:
+        return sets
+
+    absorbed: set = set()  # indices to remove
+
+    for i in range(len(sets)):
+        if i in absorbed:
+            continue
+        for j in range(i + 1, len(sets)):
+            if j in absorbed:
+                continue
+
+            a, b = sets[i], sets[j]
+
+            # Must be on overlapping or adjacent pages
+            if not _sets_overlap(a, b):
+                a_pages = {loc.page_num for loc in a.locations}
+                b_pages = {loc.page_num for loc in b.locations}
+                if a_pages and b_pages:
+                    min_gap = min(
+                        abs(cp - pp) for cp in b_pages for pp in a_pages
+                    )
+                    if min_gap > 2:
+                        continue
+
+            # Check if components are mostly the same
+            if _components_overlap(a, b):
+                # Keep the one with the longer description (more items listed)
+                desc_a = a.description or ""
+                desc_b = b.description or ""
+                if len(desc_a) >= len(desc_b):
+                    absorbed.add(j)
+                    logger.info(
+                        "Dedup Format D: dropping set %s (pages %s), "
+                        "subsumed by set %s (pages %s)",
+                        b.set_number,
+                        [l.page_num for l in b.locations],
+                        a.set_number,
+                        [l.page_num for l in a.locations],
+                    )
+                else:
+                    absorbed.add(i)
+                    logger.info(
+                        "Dedup Format D: dropping set %s (pages %s), "
+                        "subsumed by set %s (pages %s)",
+                        a.set_number,
+                        [l.page_num for l in a.locations],
+                        b.set_number,
+                        [l.page_num for l in b.locations],
+                    )
+                    break  # i is absorbed, stop comparing
+
+    return [s for idx, s in enumerate(sets) if idx not in absorbed]
+
+
 def _merge_sets(sets: List[HardwareSet]) -> List[HardwareSet]:
     """
-    Group sets by set_number and merge continuations.
+    Group sets by set_number and merge continuations, then dedup Format D
+    duplicates from overlapping batches.
 
     Sets are processed in order. For each set_number, the first occurrence
     becomes the primary. Subsequent occurrences are merged if they look like
@@ -138,6 +257,9 @@ def _merge_sets(sets: List[HardwareSet]) -> List[HardwareSet]:
                 primary = candidate
         merged.append(primary)
 
+    # Dedup Format D sets that got different set_numbers from overlapping batches
+    merged = _dedup_format_d(merged)
+
     logger.info("Merged %d raw sets -> %d reconciled sets", len(sets), len(merged))
     return merged
 
@@ -151,20 +273,36 @@ def _locate_set(
     pages_by_num: dict[int, PageData],
 ) -> HardwareSet:
     """
-    Find this set's location by searching all page text blocks for identifying
-    strings from the set_number and description.
+    Refine this set's location by searching nearby pages for identifying text.
 
-    Extracts search terms like "Doors: D118A", "Item #131", "Set #U-02"
-    from the description, then finds the first text block containing each term.
+    The model already reports approximate page numbers from its batch. We search
+    only near those pages (±2) to avoid false positives from generic terms
+    matching on unrelated pages (e.g., standards sections early in the PDF).
+
+    If the model has no locations, falls back to searching all pages.
     """
     search_terms = _extract_search_terms(hw_set.set_number, hw_set.description)
+
+    # Determine which pages to search: near the model's reported pages
+    model_pages = {loc.page_num for loc in hw_set.locations}
+    if model_pages:
+        # Search within ±2 pages of the model's locations
+        search_pages = set()
+        for p in model_pages:
+            for offset in range(-2, 3):
+                candidate = p + offset
+                if candidate in pages_by_num:
+                    search_pages.add(candidate)
+    else:
+        # No model locations — search all pages
+        search_pages = set(pages_by_num.keys())
 
     locations: list[Location] = []
     seen_pages: set[int] = set()
 
     for term in search_terms:
         term_lower = term.lower()
-        for page_num in sorted(pages_by_num.keys()):
+        for page_num in sorted(search_pages):
             if page_num in seen_pages:
                 continue
             page_data = pages_by_num[page_num]

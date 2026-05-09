@@ -201,7 +201,8 @@ def extract_sets_from_pages(
     tool = _build_tool_schema()
     all_sets: List[HardwareSet] = []
 
-    # Prepare batches with 1-page overlap
+    # Prepare batches with 2-page overlap to handle Format D item lists
+    # that span multiple pages before the component block
     batches: List[dict[int, str]] = []
     batch_start = 0
     while batch_start < len(sorted_pages):
@@ -209,7 +210,7 @@ def extract_sets_from_pages(
         batch_pages = sorted_pages[batch_start:batch_end]
         page_texts = {p.page_num: p.full_text for p in batch_pages}
         batches.append(page_texts)
-        batch_start += max(_BATCH_SIZE - 1, 1)
+        batch_start += max(_BATCH_SIZE - 2, 1)
 
     def _run_batch(page_texts: dict[int, str]):
         page_nums = sorted(page_texts.keys())

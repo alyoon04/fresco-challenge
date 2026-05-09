@@ -28,17 +28,15 @@ A header line like "Set #1" or "SET U-01: VESTIBULE DOORS" followed by component
 A table where each row is one component. Set numbers appear in a column or as row-spanning group headers. Column headers may use abbreviations (QTY, DESC, CAT#, MFG, FIN).
 
 **Format D — Item list with shared component block.**
-A list of "Item #N" entries (each describing a door) followed by a shared block of hardware components that applies to ALL listed items. Example:
-```
-Item #21  1 Single door 113, EXIT VESTIBULE 112 LHR
-Item #22  1 Single door P249, STAIR D P249 LHR
-...
-Item #88  1 Single door C1714, STAIR E C1714 LHR
-914 x 2134 x 44 - HM DR x HM FR - 1.5HR
-204 Standard Hinge TA786 4 1/2" x 4" C26D
-68 Exit Device F-25-R-L-BE 626
-```
-This is ONE hardware set — the item lines list which doors use it, and the component block below defines the hardware. Extract it as a single set. Use the first item number as the set_number (e.g. "21") and include all item numbers in the description. The component block starts after the door size line (e.g. "914 x 2134 x 44").
+A heading (e.g. "Heading #17") followed by a list of "Item #N" entries (each describing a door), then a shared block of hardware components that applies to ALL listed items. This is ONE hardware set — the item lines list which doors use it, and the component block below defines the hardware.
+
+The item list can be very long (50+ items) and span multiple pages — see the "Multi-page sets" section below. You must include ALL items from ALL pages, not just the page where the component block appears.
+
+Extract it as a single set:
+- set_number: from the heading (e.g. "17" from "Heading #17"); if no heading, use the first item number
+- description: include ALL item numbers from ALL pages
+- locations: one entry per page the set spans
+- components: from the component block after the door size line (e.g. "914 x 2134 x 44")
 
 ## Column classification — CRITICAL
 
@@ -88,9 +86,40 @@ Set `overall_confidence` to the minimum component-field confidence within the se
 
 For each set, return the page number and an approximate text region describing where the set starts and ends on the page (e.g., "top third of page" or "rows 5-18"). I will snap these to exact bounding boxes in a post-processing step, so approximate is fine.
 
+## Multi-page sets — CRITICAL
+
+Any part of a hardware set can span page breaks: the set header, item/door lists, component rows, or any combination. A set that starts on page N may not finish until page N+2 or beyond. You MUST treat all pages in your batch as one continuous document and look both FORWARDS and BACKWARDS across pages to assemble complete sets.
+
+### General principle
+
+When you find any part of a set on one page, scan ALL other pages in your batch for the rest of that set. Specifically:
+- If you find component rows but no set header above them on that page — look BACKWARDS to earlier pages for the header.
+- If you find a set header or item list but no component block — look FORWARDS to later pages for the components.
+- If you find items/rows that continue from a previous page — look BACKWARDS for where they started.
+
+### Common multi-page patterns
+
+1. **Component rows continuing across a page break.** Component rows at the TOP of a page with no new set header belong to the set from the previous page.
+
+2. **Item/door lists spanning pages before a component block.** A set's item list (e.g. Item #21 through Item #88) can span 2-3 pages before the shared component block appears. When you find the component block, trace backwards to find ALL items and the set header.
+
+3. **Set header on one page, all content on the next.** The heading and first few lines appear at the bottom of one page, with the bulk of content on the next.
+
+### Signs that content on adjacent pages belongs to the same set
+- No new set header/heading separates them.
+- Rows follow the same format/layout.
+- Item numbers form a continuous or near-continuous sequence.
+- One page has only partial content (items without components, or components without a header).
+
+### Rules
+
+When a set spans pages in your batch, emit it ONCE with multiple location entries (one per page). Include ALL content from ALL pages.
+
+When a set's continuation falls at the START of your batch (the previous page is not in your batch), still extract those orphaned rows as a set — re-use the set number/description if visible in a repeated header, or use the set number alone. A later reconciliation step will merge them with the primary set.
+
 ## Output
 
-Call the provided tool once per hardware set found. If a set spans multiple pages in the batch, emit it once with multiple location entries.
+Call the provided tool once with ALL hardware sets found. If a set spans multiple pages in the batch, emit it once with multiple location entries.
 
 ## Worked examples
 
@@ -146,3 +175,38 @@ Extraction for Set U-04:
 - description: "Set U-04: NOT USED"
 - is_not_used: true
 - components: []
+
+### Example 3 — Multi-page set (content spans a page break)
+
+Input pages text:
+```
+--- Page 12 ---
+Heading #17
+Item #21  1 Single door 113, EXIT VESTIBULE 112 LHR
+Item #22  1 Single door P249, STAIR D P249 LHR
+Item #24  1 Single door P456, STAIR P456 FROM CORRIDOR P331, P435 LHR
+... (items #25 through #51)
+Item #51  1 Single door A1S15, STAIR A A1S15-2713 FROM CORRIDOR A800
+
+--- Page 13 ---
+Item #67  1 Single door A2B13, STAIR A A813-2713 FROM CORRIDOR A800-A2700 LHR
+Item #68  1 Single door A2B13, STAIR A A813-2713 FROM CORRIDOR A800-A2700 LHR
+... (items #69 through #88)
+Item #88  1 Single door C1714, STAIR E C1714 FROM CORRIDOR C1700
+914 x 2134 x 44 - HM DR x HM FR - 1.5HR
+204 Standard Hinge TA786 4 1/2" x 4" C26D
+68 Exit Device F-25-R-L-BE 626
+Surface Closer SC814 PA 689
+```
+
+This is ONE set spanning two pages. The heading and item list start on page 12 and continue onto page 13 where the component block follows. You must scan backwards from the component block to find all content.
+
+Extraction:
+- set_number: "17" (from "Heading #17")
+- description: "Heading #17 — Items #21-#88"
+- locations: [{page_num: 12, ...}, {page_num: 13, ...}]
+- components extracted from the block after the door size line on page 13
+
+WRONG extraction (common mistake — only looking at the current page):
+- description: "Heading #17 — Items #67-#88" ← WRONG: omitted items #21-#51 from page 12
+- This is wrong because the set started on the PREVIOUS page. Always scan backwards across all pages in your batch to find where a set begins.

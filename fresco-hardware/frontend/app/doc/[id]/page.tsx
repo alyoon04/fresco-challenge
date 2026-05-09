@@ -9,19 +9,39 @@ import ComponentTable from "@/components/ComponentTable";
 import ReextractButton from "@/components/ReextractButton";
 
 function getSearchTerms(set: HardwareSet): string[] {
-  const desc = set.description || "";
+  const desc = set.description || set.set_number;
   const terms: string[] = [];
+  const seen = new Set<string>();
 
-  if (desc) {
-    terms.push(desc);
-    const numMatch = desc.match(/#\s*[\w\-.]+/);
-    if (numMatch) terms.push(numMatch[0].replace(/\s/g, ""));
-    const noMatch = desc.match(/No\.?\s*[\w\-.]+/i);
-    if (noMatch) terms.push(noMatch[0]);
+  const add = (s: string) => {
+    const t = s.trim();
+    const key = t.toLowerCase();
+    if (t.length > 3 && !seen.has(key)) {
+      seen.add(key);
+      terms.push(t);
+    }
+  };
+
+  // Try progressively shorter prefixes of the description.
+  // "Set: 2.0 — Single Opening – Access Controlled, Stairwell, Fail Safe"
+  // → "Set: 2.0 — Single Opening – Access Controlled, Stairwell, Fail Safe"
+  // → "Set: 2.0 — Single Opening – Access Controlled, Stairwell"
+  // → "Set: 2.0 — Single Opening – Access Controlled"
+  // → "Set: 2.0 — Single Opening"
+  // → "Set: 2.0"
+  // The identifier stays intact, and we try most-specific first.
+  const delimiterPattern = /\s*[—\-–:,]\s*/g;
+  const splitPositions: number[] = [];
+  let m;
+  while ((m = delimiterPattern.exec(desc)) !== null) {
+    splitPositions.push(m.index);
   }
 
-  if (set.set_number) {
-    terms.push(set.set_number);
+  // Full description first
+  add(desc);
+  // Then truncate at each delimiter from the end
+  for (let i = splitPositions.length - 1; i >= 0; i--) {
+    add(desc.slice(0, splitPositions[i]));
   }
 
   return terms;
@@ -74,9 +94,8 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
     const sets = doc?.sets ?? [];
     const set = sets.find((s) => s.id === setId);
     if (set) {
-      const terms = getSearchTerms(set);
       searchKeyRef.current += 1;
-      setSearchTerms(terms);
+      setSearchTerms(getSearchTerms(set));
       setSearchKey(searchKeyRef.current);
     }
   }, [doc?.sets]);
