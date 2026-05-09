@@ -323,6 +323,7 @@ def get_document(doc_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception("Error fetching document %s", doc_id)
         raise HTTPException(500, str(e))
     finally:
         db.close()
