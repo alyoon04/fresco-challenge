@@ -24,7 +24,10 @@ database_url = os.environ.get(
     "DATABASE_URL",
     "postgresql+asyncpg://fresco:fresco@localhost:5432/fresco",
 )
-sync_url = database_url.replace("+asyncpg", "+psycopg2").replace("+aiopg", "+psycopg2")
+sync_url = database_url
+if sync_url.startswith("postgres://"):
+    sync_url = sync_url.replace("postgres://", "postgresql+psycopg2://", 1)
+sync_url = sync_url.replace("+asyncpg", "+psycopg2").replace("+aiopg", "+psycopg2")
 config.set_main_option("sqlalchemy.url", sync_url)
 
 # Python logging from alembic.ini

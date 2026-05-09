@@ -67,7 +67,10 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+asyncpg://fresco:fresco@localhost:5432/fresco",
 )
-_sync_url = DATABASE_URL.replace("+asyncpg", "+psycopg2").replace("+aiopg", "+psycopg2")
+_sync_url = DATABASE_URL
+if _sync_url.startswith("postgres://"):
+    _sync_url = _sync_url.replace("postgres://", "postgresql+psycopg2://", 1)
+_sync_url = _sync_url.replace("+asyncpg", "+psycopg2").replace("+aiopg", "+psycopg2")
 engine = create_engine(_sync_url)
 SessionLocal = sessionmaker(bind=engine)
 
