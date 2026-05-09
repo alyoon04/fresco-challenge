@@ -1,0 +1,17 @@
+{$DOMAIN:localhost} {
+	# API and WebSocket — proxy to FastAPI
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+	handle /ws/* {
+		reverse_proxy backend:8000
+	}
+	handle /healthz {
+		reverse_proxy backend:8000
+	}
+
+	# Everything else — proxy to Next.js
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

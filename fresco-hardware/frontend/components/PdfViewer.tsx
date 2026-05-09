@@ -73,14 +73,12 @@ export default function PdfViewer({ docId, pageCount, searchTerms, searchKey }: 
   const containerRef = useRef<HTMLDivElement>(null);
   const [pageWidth, setPageWidth] = useState(700);
   const highlightRef = useRef<HTMLDivElement | null>(null);
-  const pdfDocRef = useRef<pdfjs.PDFDocumentProxy | null>(null);
   // Pre-built index: normalized text for every page, stored as state so
   // the search effect re-runs when indexing completes
   const [pageTexts, setPageTexts] = useState<string[]>([]);
 
   const onDocumentLoadSuccess = useCallback(
     async (pdf: pdfjs.PDFDocumentProxy) => {
-      pdfDocRef.current = pdf;
       setNumPages(pdf.numPages);
       if (containerRef.current) {
         setPageWidth(Math.min(containerRef.current.clientWidth - 32, 900));
@@ -94,7 +92,6 @@ export default function PdfViewer({ docId, pageCount, searchTerms, searchKey }: 
         texts.push(normalize(tc.items.map((it) => ("str" in it ? it.str : "")).join(" ")));
       }
       setPageTexts(texts);
-      console.log("[PdfViewer] indexed", texts.length, "pages");
     },
     [],
   );
@@ -109,25 +106,18 @@ export default function PdfViewer({ docId, pageCount, searchTerms, searchKey }: 
 
     // Find the page — instant, using pre-built index
     let pageNum: number | null = null;
-    let matchedTerm: string | null = null;
     for (const term of searchTerms) {
       const q = normalize(term);
       for (let i = 0; i < pageTexts.length; i++) {
         if (pageTexts[i].includes(q)) {
           pageNum = i + 1;
-          matchedTerm = term;
           break;
         }
       }
       if (pageNum) break;
     }
 
-    if (!pageNum) {
-      console.log("[PdfViewer] no page found for any term:", searchTerms);
-      return;
-    }
-
-    console.log("[PdfViewer] going to page:", pageNum, "matched:", matchedTerm, "all terms:", searchTerms);
+    if (!pageNum) return;
 
     const container = containerRef.current;
     const pageEls = container.querySelectorAll(".react-pdf__Page");
@@ -192,7 +182,6 @@ export default function PdfViewer({ docId, pageCount, searchTerms, searchKey }: 
 
       page.appendChild(highlight);
       highlightRef.current = highlight;
-      console.log("[PdfViewer] highlight appended, size:", highlight.style.width, "x", highlight.style.height, "at", highlight.style.left, highlight.style.top);
 
       matchedSpans[0].scrollIntoView({ behavior: "smooth", block: "center" });
     }, 200);

@@ -87,10 +87,6 @@ export function pdfUrl(docId: string): string {
   return `${API_BASE}/api/documents/${docId}/pdf`;
 }
 
-export function pageUrl(docId: string, pageNum: number): string {
-  return `${API_BASE}/api/documents/${docId}/page/${pageNum}`;
-}
-
 export async function correctComponent(
   setId: number,
   compIdx: number,

@@ -1,11 +1,10 @@
 # Core framework
 fastapi==0.115.0
-uvicorn==0.30.6
+uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 
 # Database
 sqlalchemy==2.0.35
-asyncpg==0.29.0
 psycopg2-binary==2.9.9
 alembic==1.13.3
 
@@ -22,9 +21,5 @@ anthropic==0.39.0
 # Data validation
 pydantic==2.9.2
 
-# Object storage (Cloudflare R2 / S3-compatible)
-boto3==1.35.36
-
-# Testing
-pytest==8.3.3
-pytest-asyncio==0.24.0
+# Environment
+python-dotenv==1.0.1
