@@ -26,7 +26,7 @@ from typing import Optional
 import asyncio
 
 import fitz  # PyMuPDF
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -213,13 +213,14 @@ def healthz():
 
 
 @app.get("/api/documents")
-def list_documents():
-    """List all documents, most recent first."""
+def list_documents(device_id: str | None = Query(default=None)):
+    """List documents for a device, most recent first."""
     db = _get_db()
     try:
-        docs = db.execute(
-            select(Document).order_by(Document.created_at.desc())
-        ).scalars().all()
+        stmt = select(Document).order_by(Document.created_at.desc())
+        if device_id:
+            stmt = stmt.where(Document.device_id == device_id)
+        docs = db.execute(stmt).scalars().all()
         return [
             {
                 "id": str(d.id),
@@ -236,7 +237,7 @@ def list_documents():
 
 
 @app.post("/api/documents", response_model=UploadResponse)
-def upload_document(file: UploadFile = File(...)):
+def upload_document(file: UploadFile = File(...), device_id: str | None = Form(default=None)):
     """
     Upload a PDF specbook and queue it for extraction.
 
@@ -274,6 +275,7 @@ def upload_document(file: UploadFile = File(...)):
             r2_key=r2_key,
             page_count=page_count,
             status=DocumentStatus.UPLOADED,
+            device_id=device_id,
             pdf_data=pdf_bytes,
         )
         db.add(db_doc)
@@ -287,7 +289,16 @@ def upload_document(file: UploadFile = File(...)):
     # Queue Celery task (import here to avoid circular import at module load)
     try:
         from celery_worker import process_document
-        process_document.delay(doc_id)
+        result = process_document.delay(doc_id)
+        # Store task ID so we can revoke it later
+        db2 = _get_db()
+        try:
+            d = db2.get(Document, doc_id)
+            if d:
+                d.celery_task_id = result.id
+                db2.commit()
+        finally:
+            db2.close()
     except Exception as e:
         logger.warning("Failed to queue Celery task (worker may be offline): %s", e)
 
@@ -324,6 +335,45 @@ def get_document(doc_id: str):
         raise
     except Exception as e:
         logger.exception("Error fetching document %s", doc_id)
+        raise HTTPException(500, str(e))
+    finally:
+        db.close()
+
+
+@app.post("/api/documents/{doc_id}/cancel")
+def cancel_document(doc_id: str):
+    """Cancel a document that is currently being processed."""
+    db = _get_db()
+    try:
+        doc = db.execute(
+            select(Document).where(Document.id == doc_id)
+        ).scalar_one_or_none()
+        if not doc:
+            raise HTTPException(404, "Document not found")
+
+        status_val = doc.status.value if hasattr(doc.status, "value") else doc.status
+        if status_val not in ("uploaded", "processing"):
+            raise HTTPException(400, f"Cannot cancel document with status '{status_val}'")
+
+        # Revoke the Celery task if we have a task ID
+        if doc.celery_task_id:
+            try:
+                from celery_worker import celery_app
+                celery_app.control.revoke(doc.celery_task_id, terminate=True, signal="SIGTERM")
+            except Exception as e:
+                logger.warning("Failed to revoke Celery task %s: %s", doc.celery_task_id, e)
+
+        doc.status = DocumentStatus.CANCELLED
+        db.commit()
+
+        # Notify WebSocket clients
+        publish_status(doc_id, "cancelled")
+
+        return {"ok": True, "status": "cancelled"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
         raise HTTPException(500, str(e))
     finally:
         db.close()
@@ -530,7 +580,7 @@ async def ws_document_status(ws: WebSocket, doc_id: str):
         if doc:
             status_val = doc.status.value if hasattr(doc.status, "value") else doc.status
             await ws.send_json({"status": status_val})
-            if status_val in ("done", "failed"):
+            if status_val in ("done", "failed", "cancelled"):
                 await ws.close()
                 return
     finally:
@@ -556,7 +606,7 @@ async def ws_document_status(ws: WebSocket, doc_id: str):
                     if doc:
                         status_val = doc.status.value if hasattr(doc.status, "value") else doc.status
                         await ws.send_json({"status": status_val})
-                        if status_val in ("done", "failed"):
+                        if status_val in ("done", "failed", "cancelled"):
                             break
                 finally:
                     db.close()

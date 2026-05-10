@@ -11,6 +11,7 @@ function StatusBadge({ status }: { status: string }) {
     failed: "bg-red-50 text-red-700 border-red-200",
     processing: "bg-amber-50 text-amber-700 border-amber-200",
     uploaded: "bg-cream-200 text-cream-700 border-cream-300",
+    cancelled: "bg-gray-50 text-gray-600 border-gray-200",
   }[status] ?? "bg-cream-200 text-cream-700 border-cream-300";
 
   return (

@@ -7,6 +7,22 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// ---------------------------------------------------------------------------
+// Device ID — unique per browser, persisted in localStorage
+// ---------------------------------------------------------------------------
+
+const DEVICE_ID_KEY = "fresco_device_id";
+
+export function getDeviceId(): string {
+  if (typeof window === "undefined") return "";
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
 export interface Component {
   idx: number;
   qty: number | null;
@@ -64,7 +80,11 @@ export interface DocumentSummary {
 }
 
 export async function listDocuments(): Promise<DocumentSummary[]> {
-  const res = await fetch(`${API_BASE}/api/documents`);
+  const deviceId = getDeviceId();
+  const url = deviceId
+    ? `${API_BASE}/api/documents?device_id=${encodeURIComponent(deviceId)}`
+    : `${API_BASE}/api/documents`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`List documents failed: ${res.status}`);
   return res.json();
 }
@@ -72,6 +92,8 @@ export async function listDocuments(): Promise<DocumentSummary[]> {
 export async function uploadDocument(file: File): Promise<{ doc_id: string; status: string }> {
   const form = new FormData();
   form.append("file", file);
+  const deviceId = getDeviceId();
+  if (deviceId) form.append("device_id", deviceId);
   const res = await fetch(`${API_BASE}/api/documents`, { method: "POST", body: form });
   if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
   return res.json();
@@ -99,6 +121,11 @@ export async function correctComponent(
     body: JSON.stringify({ field, value }),
   });
   if (!res.ok) throw new Error(`Correction failed: ${res.status}`);
+}
+
+export async function cancelDocument(docId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/documents/${docId}/cancel`, { method: "POST" });
+  if (!res.ok) throw new Error(`Cancel failed: ${res.status}`);
 }
 
 export async function reextractSet(setId: number, hint: string): Promise<void> {

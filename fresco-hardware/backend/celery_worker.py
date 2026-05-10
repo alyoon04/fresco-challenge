@@ -98,6 +98,15 @@ def _load_pdf(doc_id: str) -> bytes:
     raise FileNotFoundError(f"PDF not found for doc {doc_id}")
 
 
+def _is_cancelled(db, doc_id: str) -> bool:
+    """Check if the document has been cancelled by the user."""
+    doc = db.get(Document, uuid.UUID(doc_id))
+    if doc:
+        db.refresh(doc)
+        return doc.status == DocumentStatus.CANCELLED
+    return False
+
+
 def _update_status(db, doc_id: str, status: DocumentStatus, error: str | None = None):
     """Update document processing status and notify WebSocket clients."""
     doc = db.get(Document, uuid.UUID(doc_id))
@@ -219,6 +228,10 @@ def process_document(self, doc_id: str):
             doc.page_count = len(pages)
             db.commit()
 
+        if _is_cancelled(db, doc_id):
+            logger.info("[%s] Cancelled before stage 2", doc_id)
+            return
+
         # Stage 2: Filter
         candidates = filter_pages(pages)
         logger.info("[%s] Stage 2: %d candidate pages", doc_id, len(candidates))
@@ -227,6 +240,10 @@ def process_document(self, doc_id: str):
             logger.warning("[%s] No candidate pages found — marking done with 0 sets", doc_id)
             _store_results(db, doc_id, [], pages, {"mfr_codes": {}, "finish_codes": {}})
             _update_status(db, doc_id, DocumentStatus.DONE)
+            return
+
+        if _is_cancelled(db, doc_id):
+            logger.info("[%s] Cancelled before stage 3", doc_id)
             return
 
         # Stage 3: Legend extraction
@@ -255,6 +272,10 @@ def process_document(self, doc_id: str):
             db.add(db_page)
         db.commit()
 
+        if _is_cancelled(db, doc_id):
+            logger.info("[%s] Cancelled before stage 4", doc_id)
+            return
+
         # Stage 4: Extraction with progressive results
         batch_count = [0]
 
@@ -274,6 +295,10 @@ def process_document(self, doc_id: str):
 
         raw_sets = extract_sets_from_pages(pdf_bytes, candidates, legend, client, on_batch=_on_batch)
         logger.info("[%s] Stage 4: extracted %d raw sets", doc_id, len(raw_sets))
+
+        if _is_cancelled(db, doc_id):
+            logger.info("[%s] Cancelled before stage 5", doc_id)
+            return
 
         # Stage 5: Reconciliation — merge multi-page sets and snap bboxes
         final_sets = reconcile_sets(raw_sets, pages)
@@ -328,10 +353,11 @@ def reextract_set_task(self, doc_id: str, set_id: int, page_nums: list, hint: st
         # Build candidate pages for the target pages only
         pages = ingest_document(pdf_bytes)
         from app.extraction.page_filter import CandidatePage
+        pages_by_num = {p.page_num: p for p in pages}
         candidates = [
-            CandidatePage(page_num=pn, full_text=pages[pn].full_text, filter_score=0)
+            CandidatePage(page_num=pn, full_text=pages_by_num[pn].full_text, filter_score=0)
             for pn in page_nums
-            if pn < len(pages)
+            if pn in pages_by_num
         ]
 
         # Re-extract

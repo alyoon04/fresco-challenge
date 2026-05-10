@@ -2,63 +2,26 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchDocument, type HardwareSet } from "@/app/api";
+import { fetchDocument, cancelDocument, type HardwareSet } from "@/app/api";
 import PdfViewer from "@/components/PdfViewer";
 import SetList from "@/components/SetList";
 import ComponentTable from "@/components/ComponentTable";
 import ReextractButton from "@/components/ReextractButton";
 
-function getSearchTerms(set: HardwareSet): string[] {
-  const desc = set.description || set.set_number;
-  const terms: string[] = [];
-  const seen = new Set<string>();
-
-  const add = (s: string) => {
-    const t = s.trim();
-    const key = t.toLowerCase();
-    if (t.length > 3 && !seen.has(key)) {
-      seen.add(key);
-      terms.push(t);
-    }
-  };
-
-  // Try progressively shorter prefixes of the description.
-  // "Set: 2.0 — Single Opening – Access Controlled, Stairwell, Fail Safe"
-  // → "Set: 2.0 — Single Opening – Access Controlled, Stairwell, Fail Safe"
-  // → "Set: 2.0 — Single Opening – Access Controlled, Stairwell"
-  // → "Set: 2.0 — Single Opening – Access Controlled"
-  // → "Set: 2.0 — Single Opening"
-  // → "Set: 2.0"
-  // The identifier stays intact, and we try most-specific first.
-  const delimiterPattern = /\s*[—\-–:,]\s*/g;
-  const splitPositions: number[] = [];
-  let m;
-  while ((m = delimiterPattern.exec(desc)) !== null) {
-    splitPositions.push(m.index);
-  }
-
-  // Full description first
-  add(desc);
-  // Then truncate at each delimiter from the end
-  for (let i = splitPositions.length - 1; i >= 0; i--) {
-    add(desc.slice(0, splitPositions[i]));
-  }
-
-  return terms;
-}
-
 function StatusDot({ status }: { status: string }) {
   if (status === "done") return <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />;
   if (status === "failed") return <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />;
+  if (status === "cancelled") return <span className="w-2 h-2 rounded-full bg-gray-400 inline-block" />;
   return <span className="w-2 h-2 rounded-full bg-amber-500 inline-block animate-pulse-soft" />;
 }
 
 export default function DocumentPage({ params }: { params: { id: string } }) {
   const { id } = params;
   const [selectedSetId, setSelectedSetId] = useState<number | null>(null);
-  const [searchTerms, setSearchTerms] = useState<string[]>([]);
-  const searchKeyRef = useRef(0);
-  const [searchKey, setSearchKey] = useState(0);
+  const [targetPage, setTargetPage] = useState<number | null>(null);
+  const scrollKeyRef = useRef(0);
+  const [scrollKey, setScrollKey] = useState(0);
+  const [cancelling, setCancelling] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: doc, isLoading, error } = useQuery({
@@ -68,7 +31,7 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
 
   useEffect(() => {
     const status = doc?.status;
-    if (status === "done" || status === "failed") return;
+    if (status === "done" || status === "failed" || status === "cancelled") return;
 
     const wsBase = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000")
       .replace(/^http/, "ws");
@@ -77,7 +40,7 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       queryClient.invalidateQueries({ queryKey: ["document", id] });
-      if (data.status === "done" || data.status === "failed") {
+      if (data.status === "done" || data.status === "failed" || data.status === "cancelled") {
         ws.close();
       }
     };
@@ -89,14 +52,29 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
     };
   }, [id, doc?.status, queryClient]);
 
+  const handleCancel = useCallback(async () => {
+    setCancelling(true);
+    try {
+      await cancelDocument(id);
+      queryClient.invalidateQueries({ queryKey: ["document", id] });
+    } catch (e) {
+      console.error("Cancel failed:", e);
+    } finally {
+      setCancelling(false);
+    }
+  }, [id, queryClient]);
+
   const handleSelectSet = useCallback((setId: number) => {
     setSelectedSetId(setId);
     const sets = doc?.sets ?? [];
     const set = sets.find((s) => s.id === setId);
-    if (set) {
-      searchKeyRef.current += 1;
-      setSearchTerms(getSearchTerms(set));
-      setSearchKey(searchKeyRef.current);
+    if (set && set.locations.length > 0) {
+      // page_num is 1-indexed from backend, matches PDF viewer
+      const firstPage = Math.min(...set.locations.map((l) => l.page_num));
+      console.log(`[DocPage] Set ${set.set_number}: locations=${JSON.stringify(set.locations.map(l => l.page_num))}, scrolling to page ${firstPage}`);
+      scrollKeyRef.current += 1;
+      setTargetPage(firstPage);
+      setScrollKey(scrollKeyRef.current);
     }
   }, [doc?.sets]);
 
@@ -158,11 +136,26 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
             </div>
           </div>
         </div>
-        {doc.error_message && (
-          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-1.5 max-w-md truncate">
-            {doc.error_message}
-          </p>
-        )}
+        <div className="flex items-center gap-3">
+          {(doc.status === "processing" || doc.status === "uploaded") && (
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="text-sm text-red-600 border border-red-300 rounded-lg px-3 py-1.5
+                         transition-all duration-150
+                         hover:bg-red-50 hover:border-red-400
+                         active:scale-[0.97]
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {cancelling ? "Stopping..." : "Stop Processing"}
+            </button>
+          )}
+          {doc.error_message && (
+            <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-1.5 max-w-md truncate">
+              {doc.error_message}
+            </p>
+          )}
+        </div>
       </header>
 
       {/* Three-pane layout */}
@@ -172,8 +165,8 @@ export default function DocumentPage({ params }: { params: { id: string } }) {
           <PdfViewer
             docId={id}
             pageCount={doc.page_count}
-            searchTerms={searchTerms}
-            searchKey={searchKey}
+            targetPage={targetPage}
+            scrollKey={scrollKey}
           />
         </div>
 

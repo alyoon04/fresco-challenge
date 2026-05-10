@@ -54,6 +54,7 @@ class DocumentStatus(str, enum.Enum):
     PROCESSING = "processing"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,8 @@ class Document(Base):
         nullable=False,
         default=DocumentStatus.UPLOADED,
     )
+    device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    celery_task_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     pdf_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     legend_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
