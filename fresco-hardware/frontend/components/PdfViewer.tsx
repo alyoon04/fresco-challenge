@@ -11,183 +11,41 @@ pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/b
 interface Props {
   docId: string;
   pageCount: number;
-  searchTerms: string[];
-  searchKey: number;
+  /** Page number (1-indexed) to scroll to and highlight */
+  targetPage: number | null;
+  /** Incremented to re-trigger scroll even if targetPage is the same */
+  scrollKey: number;
 }
 
-function normalize(s: string): string {
-  return s.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-/**
- * Find spans on a page that match the query.
- * Tries single-span first, then concatenates adjacent spans for multi-word.
- */
-function findMatchingSpans(
-  pageEl: Element,
-  terms: string[],
-): HTMLSpanElement[] {
-  const allSpans = Array.from(
-    pageEl.querySelectorAll<HTMLSpanElement>(".react-pdf__Page__textContent span"),
-  ).filter((s) => s.textContent && s.textContent.trim().length > 0);
-
-  for (const term of terms) {
-    const q = normalize(term);
-
-    // Single-span match
-    for (const span of allSpans) {
-      if (normalize(span.textContent || "").includes(q)) {
-        return [span];
-      }
-    }
-
-    // Multi-span: concatenate adjacent spans
-    for (let start = 0; start < allSpans.length; start++) {
-      let combined = "";
-      for (let end = start; end < allSpans.length && end < start + 15; end++) {
-        const txt = allSpans[end].textContent || "";
-        combined += (end > start ? " " : "") + txt;
-        if (normalize(combined).includes(q)) {
-          const nc = normalize(combined);
-          const matchStart = nc.indexOf(q);
-          let charCount = 0;
-          let realStart = start;
-          for (let i = start; i <= end; i++) {
-            const spanLen = normalize(allSpans[i].textContent || "").length + 1;
-            if (charCount + spanLen > matchStart) {
-              realStart = i;
-              break;
-            }
-            charCount += spanLen;
-          }
-          return allSpans.slice(realStart, end + 1);
-        }
-      }
-    }
-  }
-  return [];
-}
-
-export default function PdfViewer({ docId, pageCount, searchTerms, searchKey }: Props) {
+export default function PdfViewer({ docId, pageCount, targetPage, scrollKey }: Props) {
   const [numPages, setNumPages] = useState<number>(pageCount);
   const containerRef = useRef<HTMLDivElement>(null);
   const [pageWidth, setPageWidth] = useState(700);
-  const highlightRef = useRef<HTMLDivElement | null>(null);
-  // Pre-built index: normalized text for every page, stored as state so
-  // the search effect re-runs when indexing completes
-  const [pageTexts, setPageTexts] = useState<string[]>([]);
+  const [highlightedPage, setHighlightedPage] = useState<number | null>(null);
 
   const onDocumentLoadSuccess = useCallback(
-    async (pdf: pdfjs.PDFDocumentProxy) => {
+    (pdf: pdfjs.PDFDocumentProxy) => {
       setNumPages(pdf.numPages);
       if (containerRef.current) {
         setPageWidth(Math.min(containerRef.current.clientWidth - 32, 900));
       }
-
-      // Build page text index
-      const texts: string[] = [];
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const tc = await page.getTextContent();
-        texts.push(normalize(tc.items.map((it) => ("str" in it ? it.str : "")).join(" ")));
-      }
-      setPageTexts(texts);
     },
     [],
   );
 
+  // Scroll to target page and highlight it
   useEffect(() => {
-    if (searchTerms.length === 0 || !containerRef.current || pageTexts.length === 0) return;
+    if (!targetPage || !containerRef.current) return;
 
-    if (highlightRef.current) {
-      highlightRef.current.remove();
-      highlightRef.current = null;
+    setHighlightedPage(targetPage);
+
+    const wrapper = containerRef.current.querySelector<HTMLDivElement>(
+      `[data-page-number="${targetPage}"]`
+    );
+    if (wrapper) {
+      wrapper.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-
-    // Find the page — instant, using pre-built index
-    let pageNum: number | null = null;
-    for (const term of searchTerms) {
-      const q = normalize(term);
-      for (let i = 0; i < pageTexts.length; i++) {
-        if (pageTexts[i].includes(q)) {
-          pageNum = i + 1;
-          break;
-        }
-      }
-      if (pageNum) break;
-    }
-
-    if (!pageNum) return;
-
-    const container = containerRef.current;
-    const pageEls = container.querySelectorAll(".react-pdf__Page");
-    const pageEl = pageEls[pageNum - 1];
-    if (!pageEl) return;
-
-    pageEl.scrollIntoView({ behavior: "smooth", block: "start" });
-
-    // Poll until the text layer spans have rendered with actual dimensions
-    let cancelled = false;
-    let attempts = 0;
-    const maxAttempts = 20; // 20 × 200ms = 4 seconds max
-
-    const timer = setInterval(() => {
-      if (cancelled) { clearInterval(timer); return; }
-      attempts++;
-
-      const matchedSpans = findMatchingSpans(pageEl, searchTerms);
-      if (matchedSpans.length === 0) {
-        if (attempts >= maxAttempts) clearInterval(timer);
-        return;
-      }
-
-      // Check if spans have actual dimensions (text layer fully rendered)
-      const firstRect = matchedSpans[0].getBoundingClientRect();
-      if (firstRect.width === 0 && firstRect.height === 0) {
-        if (attempts >= maxAttempts) clearInterval(timer);
-        return;
-      }
-
-      // Spans are rendered — highlight them
-      clearInterval(timer);
-
-      const page = matchedSpans[0].closest(".react-pdf__Page") as HTMLElement;
-      if (!page) return;
-
-      // Append to the page element itself (not its parent) so coordinates match
-      page.style.position = "relative";
-
-      const pageRect = page.getBoundingClientRect();
-
-      let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity, maxBottom = -Infinity;
-      for (const s of matchedSpans) {
-        const r = s.getBoundingClientRect();
-        minLeft = Math.min(minLeft, r.left);
-        minTop = Math.min(minTop, r.top);
-        maxRight = Math.max(maxRight, r.right);
-        maxBottom = Math.max(maxBottom, r.bottom);
-      }
-
-      const highlight = document.createElement("div");
-      highlight.style.position = "absolute";
-      highlight.style.left = `${minLeft - pageRect.left - 4}px`;
-      highlight.style.top = `${minTop - pageRect.top - 2}px`;
-      highlight.style.width = `${maxRight - minLeft + 8}px`;
-      highlight.style.height = `${maxBottom - minTop + 4}px`;
-      highlight.style.backgroundColor = "rgba(255, 200, 0, 0.35)";
-      highlight.style.border = "3px solid rgba(255, 150, 0, 0.9)";
-      highlight.style.borderRadius = "3px";
-      highlight.style.pointerEvents = "none";
-      highlight.style.zIndex = "9999";
-
-      page.appendChild(highlight);
-      highlightRef.current = highlight;
-
-      matchedSpans[0].scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 200);
-
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [searchTerms, searchKey, pageTexts]);
+  }, [targetPage, scrollKey]);
 
   return (
     <div className="flex flex-col h-full bg-cream-50">
@@ -207,7 +65,7 @@ export default function PdfViewer({ docId, pageCount, searchTerms, searchKey }: 
             if (e.key === "Enter") {
               const val = parseInt((e.target as HTMLInputElement).value);
               if (val >= 1 && val <= numPages) {
-                const pages = containerRef.current?.querySelectorAll(".react-pdf__Page");
+                const pages = containerRef.current?.querySelectorAll("[data-page-number]");
                 if (pages?.[val - 1]) {
                   pages[val - 1].scrollIntoView({ behavior: "smooth", block: "start" });
                 }
@@ -224,14 +82,28 @@ export default function PdfViewer({ docId, pageCount, searchTerms, searchKey }: 
           loading={<p className="p-6 text-cream-500 text-sm">Loading PDF...</p>}
           onLoadSuccess={onDocumentLoadSuccess}
         >
-          {Array.from({ length: numPages }, (_, i) => (
-            <div key={i} className="relative mx-auto mb-3 mt-1" style={{ width: pageWidth }}>
-              <div className="text-xs text-cream-400 text-center py-1">Page {i + 1}</div>
-              <div className="relative shadow-sm rounded">
-                <Page pageNumber={i + 1} width={pageWidth} />
+          {Array.from({ length: numPages }, (_, i) => {
+            const pageNum = i + 1;
+            const isHighlighted = highlightedPage === pageNum;
+            return (
+              <div
+                key={i}
+                data-page-number={pageNum}
+                className="relative mx-auto mb-3 mt-1"
+                style={{ width: pageWidth }}
+              >
+                <div className="text-xs text-cream-400 text-center py-1">Page {pageNum}</div>
+                <div className={`relative shadow-sm rounded ${
+                  isHighlighted ? "ring-2 ring-terra-500 ring-offset-2 ring-offset-cream-200" : ""
+                }`}>
+                  <Page pageNumber={pageNum} width={pageWidth} />
+                  {isHighlighted && (
+                    <div className="absolute left-0 top-0 w-1 h-full bg-terra-500 rounded-l" />
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </Document>
       </div>
     </div>
