@@ -94,6 +94,50 @@ def _should_merge(primary: HardwareSet, candidate: HardwareSet) -> bool:
     return len(candidate.components) < 3
 
 
+def _merge_descriptions(a: str | None, b: str | None) -> str | None:
+    """Merge two set descriptions, combining item number ranges.
+
+    If both descriptions reference item numbers (e.g. "Items #21-#51" and
+    "Items #52-#88"), produce a combined range ("Items #21-#88").
+    Otherwise, keep the longer description.
+    """
+    import re
+    if not a and not b:
+        return None
+    if not a:
+        return b
+    if not b:
+        return a
+
+    # Extract all item numbers from both descriptions
+    nums_a = set(int(x) for x in re.findall(r'#(\d+)', a))
+    nums_b = set(int(x) for x in re.findall(r'#(\d+)', b))
+
+    if nums_a and nums_b:
+        all_nums = nums_a | nums_b
+        if len(all_nums) > len(nums_a) and len(all_nums) > len(nums_b):
+            # Combine: use the longer description as base and update the range
+            base = max(a, b, key=len)
+            lo, hi = min(all_nums), max(all_nums)
+            # Replace existing range pattern like "Items #21-#51" or "#21 through #51"
+            updated = re.sub(
+                r'#\d+\s*[-–—]\s*#?\d+',
+                f'#{lo}-#{hi}',
+                base,
+            )
+            # Also try "Items #X through #Y"
+            updated = re.sub(
+                r'#\d+\s+through\s+#?\d+',
+                f'#{lo} through #{hi}',
+                updated,
+                flags=re.IGNORECASE,
+            )
+            if updated != base:
+                return updated
+
+    return max(a, b, key=len)
+
+
 def _merge_two_sets(primary: HardwareSet, candidate: HardwareSet) -> HardwareSet:
     """Merge a continuation set into the primary set, deduplicating components."""
     # Deduplicate components by (description, catalog_number)
@@ -113,9 +157,11 @@ def _merge_two_sets(primary: HardwareSet, candidate: HardwareSet) -> HardwareSet
             seen_pages.add(loc.page_num)
             merged_locations.append(loc)
 
+    description = _merge_descriptions(primary.description, candidate.description)
+
     return HardwareSet(
         set_number=primary.set_number,
-        description=primary.description or candidate.description,
+        description=description,
         locations=merged_locations,
         components=merged_components,
         is_not_used=primary.is_not_used and candidate.is_not_used,
@@ -190,10 +236,12 @@ def _dedup_format_d(sets: List[HardwareSet]) -> List[HardwareSet]:
 
             # Check if components are mostly the same
             if _components_overlap(a, b):
-                # Keep the one with the longer description (more items listed)
+                # Merge description from both into the survivor
+                merged_desc = _merge_descriptions(a.description, b.description)
                 desc_a = a.description or ""
                 desc_b = b.description or ""
                 if len(desc_a) >= len(desc_b):
+                    sets[i] = a.model_copy(update={"description": merged_desc})
                     absorbed.add(j)
                     logger.info(
                         "Dedup Format D: dropping set %s (pages %s), "
@@ -204,6 +252,7 @@ def _dedup_format_d(sets: List[HardwareSet]) -> List[HardwareSet]:
                         [l.page_num for l in a.locations],
                     )
                 else:
+                    sets[j] = b.model_copy(update={"description": merged_desc})
                     absorbed.add(i)
                     logger.info(
                         "Dedup Format D: dropping set %s (pages %s), "
@@ -273,54 +322,51 @@ def _locate_set(
     pages_by_num: dict[int, PageData],
 ) -> HardwareSet:
     """
-    Refine this set's location by searching nearby pages for identifying text.
+    Enrich the model's locations with bbox data by searching for identifying
+    text on the pages the model already reported.
 
-    The model already reports approximate page numbers from its batch. We search
-    only near those pages (±2) to avoid false positives from generic terms
-    matching on unrelated pages (e.g., standards sections early in the PDF).
+    The model's page numbers are authoritative — we only search those exact
+    pages (not nearby ones) to avoid snapping to cross-references or index
+    entries on earlier pages.
 
     If the model has no locations, falls back to searching all pages.
     """
+    model_pages = {loc.page_num for loc in hw_set.locations}
+    if not model_pages:
+        # No model locations — nothing to enrich
+        return hw_set
+
     search_terms = _extract_search_terms(hw_set.set_number, hw_set.description)
 
-    # Determine which pages to search: near the model's reported pages
-    model_pages = {loc.page_num for loc in hw_set.locations}
-    if model_pages:
-        # Search within ±2 pages of the model's locations
-        search_pages = set()
-        for p in model_pages:
-            for offset in range(-2, 3):
-                candidate = p + offset
-                if candidate in pages_by_num:
-                    search_pages.add(candidate)
-    else:
-        # No model locations — search all pages
-        search_pages = set(pages_by_num.keys())
+    # Search only the model's exact pages for bbox enrichment
+    enriched_locations: list[Location] = []
+    for loc in hw_set.locations:
+        page_data = pages_by_num.get(loc.page_num)
+        if not page_data:
+            enriched_locations.append(loc)
+            continue
 
-    locations: list[Location] = []
-    seen_pages: set[int] = set()
-
-    for term in search_terms:
-        term_lower = term.lower()
-        for page_num in sorted(search_pages):
-            if page_num in seen_pages:
-                continue
-            page_data = pages_by_num[page_num]
+        # Try to find a text block with identifying text for bbox
+        found_bbox = False
+        for term in search_terms:
+            if found_bbox:
+                break
+            term_lower = term.lower()
             for tb in page_data.text_blocks:
                 if term_lower in tb.text.lower():
-                    locations.append(Location(
-                        page_num=page_num,
+                    enriched_locations.append(Location(
+                        page_num=loc.page_num,
                         bbox=tb.bbox,
                         line_range=(tb.line_idx, tb.line_idx),
                     ))
-                    seen_pages.add(page_num)
+                    found_bbox = True
                     break
 
-    if locations:
-        return hw_set.model_copy(update={"locations": locations})
+        if not found_bbox:
+            # Keep model's location as-is (no bbox refinement)
+            enriched_locations.append(loc)
 
-    # Fallback: keep model's locations
-    return hw_set
+    return hw_set.model_copy(update={"locations": enriched_locations})
 
 
 def _extract_search_terms(set_number: str, description: str | None) -> list[str]:
@@ -379,6 +425,10 @@ def reconcile_sets(
     """
     if not sets:
         return []
+
+    # Sort by earliest page number so the most complete version of a set
+    # (from the batch that saw its first page) becomes the primary during merge
+    sets = sorted(sets, key=lambda s: min((l.page_num for l in s.locations), default=0))
 
     merged = _merge_sets(sets)
 

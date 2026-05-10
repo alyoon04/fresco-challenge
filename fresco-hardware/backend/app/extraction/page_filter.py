@@ -81,7 +81,7 @@ _ALL_KNOWN_CODES = _MFR_CODES | _FINISH_CODES
 @dataclass
 class CandidatePage:
     """A page that passed the conjunction filter."""
-    page_num: int       # Zero-indexed, matches PageData.page_num
+    page_num: int       # One-indexed, matches PageData.page_num
     full_text: str
     filter_score: int   # Sum of signals that triggered the filter
 

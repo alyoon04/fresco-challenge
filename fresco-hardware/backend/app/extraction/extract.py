@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MODEL = "claude-sonnet-4-6"
-_MAX_TOKENS = 16000
-_BATCH_SIZE = 4
-_MAX_PARALLEL = 8
+_MAX_TOKENS = 32000
+_BATCH_SIZE = 6
+_MAX_PARALLEL = 10
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extraction_system.txt"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text()
@@ -201,8 +201,12 @@ def extract_sets_from_pages(
     tool = _build_tool_schema()
     all_sets: List[HardwareSet] = []
 
-    # Prepare batches with 2-page overlap to handle Format D item lists
-    # that span multiple pages before the component block
+    # Prepare batches with 3-page overlap to handle sets (especially Format D
+    # item lists) that span multiple pages before the component block.
+    # Batch size 6 with overlap 3 means each batch advances by 3 pages,
+    # giving enough context to see multi-page sets while keeping batch count
+    # reasonable (~54 batches for 162 pages instead of 162).
+    _OVERLAP = 3
     batches: List[dict[int, str]] = []
     batch_start = 0
     while batch_start < len(sorted_pages):
@@ -210,24 +214,32 @@ def extract_sets_from_pages(
         batch_pages = sorted_pages[batch_start:batch_end]
         page_texts = {p.page_num: p.full_text for p in batch_pages}
         batches.append(page_texts)
-        batch_start += max(_BATCH_SIZE - 2, 1)
+        batch_start += max(_BATCH_SIZE - _OVERLAP, 1)
 
     def _run_batch(page_texts: dict[int, str]):
         page_nums = sorted(page_texts.keys())
-        for attempt in range(2):
+        max_attempts = 5
+        for attempt in range(max_attempts):
             try:
                 return _extract_batch(page_texts, legend, anthropic_client, tool)
             except Exception as e:
-                if attempt == 0:
+                is_rate_limit = "429" in str(e) or "rate_limit" in str(e)
+                if attempt < max_attempts - 1:
+                    # Exponential backoff: 5s, 15s, 30s, 60s for rate limits
+                    # Shorter: 2s, 4s, 8s, 16s for other errors
+                    if is_rate_limit:
+                        delay = min(5 * (3 ** attempt), 60)
+                    else:
+                        delay = min(2 * (2 ** attempt), 30)
                     logger.warning(
-                        "Batch [pages %s] failed (attempt 1), retrying in 2s: %s",
-                        page_nums, e,
+                        "Batch [pages %s] failed (attempt %d/%d), retrying in %ds: %s",
+                        page_nums, attempt + 1, max_attempts, delay, e,
                     )
-                    time.sleep(2.0)
+                    time.sleep(delay)
                 else:
                     logger.error(
-                        "Batch [pages %s] failed after retry, skipping: %s",
-                        page_nums, e,
+                        "Batch [pages %s] failed after %d attempts, skipping: %s",
+                        page_nums, max_attempts, e,
                     )
         return []
 

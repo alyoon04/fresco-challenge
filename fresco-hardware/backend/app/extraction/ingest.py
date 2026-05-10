@@ -30,7 +30,7 @@ class TextBlock:
 @dataclass
 class PageData:
     """All extracted data for one page of a PDF."""
-    page_num: int                       # Zero-indexed
+    page_num: int                       # One-indexed (1 = first page)
     width: float
     height: float
     text_blocks: List[TextBlock] = field(default_factory=list)
@@ -128,8 +128,9 @@ def ingest_document(pdf_bytes: bytes) -> List[PageData]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages: List[PageData] = []
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
+    for page_idx in range(len(doc)):
+        page = doc[page_idx]
+        page_num = page_idx + 1  # 1-indexed for human/model readability
         rect = page.rect
         strike_lines = _get_strikethrough_lines(page)
 

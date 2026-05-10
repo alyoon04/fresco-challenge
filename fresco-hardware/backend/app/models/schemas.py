@@ -47,7 +47,7 @@ class Location(BaseModel):
     At least one of `bbox` or `line_range` should be populated.
     Coordinates are in PDF points (72 dpi), origin at top-left.
     """
-    page_num: int = Field(ge=0, description="Zero-indexed page number")
+    page_num: int = Field(ge=1, description="One-indexed page number")
     bbox: Optional[Tuple[float, float, float, float]] = Field(
         default=None,
         description="Bounding box (x0, y0, x1, y1) in PDF points",
