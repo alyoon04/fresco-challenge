@@ -56,6 +56,23 @@ This is the hardest part of extraction. Manufacturer codes and finish codes are 
 
 If the user message includes a `legend` object with `mfr_lookup` and/or `finish_lookup` dicts, these are code-to-name mappings extracted from this specific document's legend pages. They override the global reference codes. Use them to resolve ambiguity and to recognize document-specific codes not in the global list.
 
+## Multi-line wrapped text in tables — CRITICAL
+
+In PDF tables, a single cell's text can wrap onto multiple lines. You MUST reconstruct each row by joining wrapped lines back together before extracting fields. Signs that lines belong to the same row:
+
+- The continuation line has NO quantity (no leading number) and no values in the other columns — it's just overflow text from the cell above.
+- Example: these three text lines are ONE component row:
+  ```
+  1    EA    RAIN DRIP             142AA - AS REQUIRED        AA    ZER
+             SEALS                 BY DOOR / FRAME
+                                   MANUFACTURER
+  ```
+  Correct extraction: qty=1, description="RAIN DRIP SEALS", catalog_number="142AA - AS REQUIRED BY DOOR / FRAME MANUFACTURER", finish="AA", mfr="ZER"
+
+- Another example: "WIRE HARNESS - IN" / "DOOR" on the next line = description is "WIRE HARNESS - IN DOOR".
+
+**Never extract a continuation/overflow line as a separate component.** If a line has no quantity and its text looks like a fragment (e.g., just "SEALS" or "DOOR" or "MANUFACTURER"), it belongs to the row above.
+
 ## Field extraction rules
 
 For each component, extract these fields:
@@ -70,6 +87,15 @@ For each component, extract these fields:
 ## Operational descriptions and non-component text
 
 Hardware sets often end with blocks of prose text: operational descriptions, interlock instructions, references to other divisions, or notes like "REFER TO DIVISION 28 FOR ADDITIONAL COMPONENTS." These are NOT part of the component list — skip them. But they are also NOT the end of the hardware section. More sets almost always follow on the same page or the next page. Always keep scanning past operational descriptions, notes, and prose blocks for additional hardware sets.
+
+**Specifically, do NOT extract any of the following as components:**
+- Instruction lines: "PROVIDE FACTORY POINT TO POINT WIRING DIAGRAMS", "COORDINATE WITH DIV 28", etc. 
+- Responsibility assignments: "SEALS BY DOOR / FRAME MANUFACTURER", "HARDWARE BY OTHERS"
+- References to other divisions or drawings
+- Operational descriptions ("DOOR SHALL BE HELD OPEN AT 90 DEGREES...")
+- Door size/type lines ("914 x 2134 x 44 - HM DR x HM FR")
+
+A component is a physical piece of hardware (hinge, lockset, closer, seal, stop, etc.) with at least a description. If a line is an instruction, note, or responsibility assignment rather than a physical item, skip it.
 
 ## Struck-out / crossed-out text
 

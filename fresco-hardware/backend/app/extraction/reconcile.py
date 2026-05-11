@@ -138,13 +138,28 @@ def _merge_descriptions(a: str | None, b: str | None) -> str | None:
     return max(a, b, key=len)
 
 
+def _normalize_key(text: str | None) -> str:
+    """Normalize a component field for dedup comparison.
+
+    Strips whitespace, lowercases, removes punctuation differences so that
+    slight OCR/extraction variations from overlapping batches still match.
+    """
+    import re
+    if not text:
+        return ""
+    return re.sub(r'[\s\-\/,]+', ' ', text.strip().lower())
+
+
 def _merge_two_sets(primary: HardwareSet, candidate: HardwareSet) -> HardwareSet:
     """Merge a continuation set into the primary set, deduplicating components."""
-    # Deduplicate components by (description, catalog_number)
+    # Deduplicate components by normalized (description, catalog_number)
     seen = set()
     merged_components = []
     for comp in primary.components + candidate.components:
-        key = (comp.description.value, comp.catalog_number.value if comp.catalog_number else None)
+        key = (
+            _normalize_key(comp.description.value),
+            _normalize_key(comp.catalog_number.value if comp.catalog_number else None),
+        )
         if key not in seen:
             seen.add(key)
             merged_components.append(comp)
