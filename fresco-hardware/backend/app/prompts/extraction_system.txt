@@ -97,6 +97,8 @@ Hardware sets often end with blocks of prose text: operational descriptions, int
 
 A component is a physical piece of hardware (hinge, lockset, closer, seal, stop, etc.) with at least a description. If a line is an instruction, note, or responsibility assignment rather than a physical item, skip it.
 
+**Do NOT extract the same component twice.** If a component appears in the main table rows AND is also referenced in notes, manufacturer lines, or supplementary text below the table, extract it only ONCE from the main table row. Manufacturer/supplier references like "by NGP or approved equal" that appear as separate lines or in a notes section are NOT additional components — they are notes about the components already listed above. Place such text in the `notes` field of the corresponding component, not as a separate row.
+
 ## Struck-out / crossed-out text
 
 Text prefixed with `[STRUCK OUT]` has been visually crossed out in the original PDF. This means it has been deleted or superseded. **Skip struck-out text entirely** — do not extract struck-out components, and do not include struck-out sets. If an entire hardware set is struck out, omit it completely. If only some components within a set are struck out, extract the set but omit those components.

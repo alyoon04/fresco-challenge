@@ -150,15 +150,31 @@ def _normalize_key(text: str | None) -> str:
     return re.sub(r'[\s\-\/,]+', ' ', text.strip().lower())
 
 
+def _normalize_catalog_for_dedup(text: str | None) -> str:
+    """Normalize a catalog number for dedup, stripping manufacturer/supplier
+    reference suffixes like 'by NGP or approved equal' that sometimes get
+    absorbed into the catalog field instead of notes."""
+    import re
+    if not text:
+        return ""
+    normalized = _normalize_key(text)
+    # Strip trailing "by <manufacturer> or approved/equal/..." clauses
+    normalized = re.sub(r'\s+by\s+\w+(\s+or\s+.+)?$', '', normalized)
+    return normalized
+
+
 def _merge_two_sets(primary: HardwareSet, candidate: HardwareSet) -> HardwareSet:
     """Merge a continuation set into the primary set, deduplicating components."""
     # Deduplicate components by normalized (description, catalog_number)
+    # Use catalog normalization that strips manufacturer reference suffixes
+    # so "5050B seals (head & jambs) by NGP or approved seal" matches
+    # "5050B seals (head & jambs)"
     seen = set()
     merged_components = []
     for comp in primary.components + candidate.components:
         key = (
             _normalize_key(comp.description.value),
-            _normalize_key(comp.catalog_number.value if comp.catalog_number else None),
+            _normalize_catalog_for_dedup(comp.catalog_number.value if comp.catalog_number else None),
         )
         if key not in seen:
             seen.add(key)
@@ -421,6 +437,35 @@ def _extract_search_terms(set_number: str, description: str | None) -> list[str]
 # Public API
 # ---------------------------------------------------------------------------
 
+def _dedup_components(hw_set: HardwareSet) -> HardwareSet:
+    """Remove duplicate components within a single set.
+
+    Catches cases where the extraction model outputs the same physical item
+    twice with slightly different field assignments (e.g. manufacturer info
+    in catalog_number vs notes).
+    """
+    seen = set()
+    deduped = []
+    for comp in hw_set.components:
+        key = (
+            _normalize_key(comp.description.value),
+            _normalize_catalog_for_dedup(
+                comp.catalog_number.value if comp.catalog_number else None
+            ),
+        )
+        if key not in seen:
+            seen.add(key)
+            deduped.append(comp)
+
+    if len(deduped) < len(hw_set.components):
+        logger.info(
+            "Deduped %d -> %d components within set %s",
+            len(hw_set.components), len(deduped), hw_set.set_number,
+        )
+        return hw_set.model_copy(update={"components": deduped})
+    return hw_set
+
+
 def reconcile_sets(
     sets: List[HardwareSet],
     pages: List[PageData],
@@ -446,6 +491,10 @@ def reconcile_sets(
     sets = sorted(sets, key=lambda s: min((l.page_num for l in s.locations), default=0))
 
     merged = _merge_sets(sets)
+
+    # Dedup components within each set (catches same item extracted twice
+    # with manufacturer info in different fields)
+    merged = [_dedup_components(s) for s in merged]
 
     pages_by_num = {p.page_num: p for p in pages}
     result = [_locate_set(s, pages_by_num) for s in merged]
